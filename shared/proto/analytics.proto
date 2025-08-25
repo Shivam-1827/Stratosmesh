@@ -1,0 +1,240 @@
+
+syntax = "proto3";
+
+package stratosmesh.analytics;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+service DataStreamService {
+  rpc ProcessRealTimeStream(stream StreamDataRequest) returns (stream AnalysisResponse);
+  rpc GetTenantMetrics(TenantMetricsRequest) returns (TenantMetricsResponse);
+  rpc ExecuteStrategy(StrategyRequest) returns (StrategyResponse);
+}
+
+service AuthService {
+  rpc Authenticate(AuthRequest) returns (AuthResponse);
+  rpc ValidateToken(TokenValidationRequest) returns (TokenValidationResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+}
+
+service TenantService {
+  rpc CreateTenant(CreateTenantRequest) returns (TenantResponse);
+  rpc GetTenantConfig(TenantConfigRequest) returns (TenantConfigResponse);
+  rpc UpdateTenantLimits(UpdateLimitsRequest) returns (TenantResponse);
+}
+
+// Core Messages
+message StreamDataRequest {
+  string tenant_id = 1;
+  string stream_id = 2;
+  DataType data_type = 3;
+  google.protobuf.Struct payload = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  map<string, string> metadata = 6;
+}
+
+message AnalysisResponse {
+  string tenant_id = 1;
+  string stream_id = 2;
+  string strategy_id = 3;
+  AnalysisResult result = 4;
+  google.protobuf.Timestamp processed_at = 5;
+  repeated Alert alerts = 6;
+}
+
+message AnalysisResult {
+  string result_id = 1;
+  ResultType type = 2;
+  google.protobuf.Struct data = 3;
+  double confidence = 4;
+  map<string, double> metrics = 5;
+}
+
+message Alert {
+  string alert_id = 1;
+  AlertLevel level = 2;
+  string message = 3;
+  google.protobuf.Struct context = 4;
+}
+
+// Strategy Messages
+message StrategyRequest {
+  string tenant_id = 1;
+  string strategy_id = 2;
+  StrategyConfig config = 3;
+  repeated StreamDataRequest historical_data = 4;
+}
+
+message StrategyResponse {
+  string execution_id = 1;
+  ExecutionStatus status = 2;
+  AnalysisResult result = 3;
+  repeated string errors = 4;
+}
+
+message StrategyConfig {
+  string name = 1;
+  string version = 2;
+  google.protobuf.Struct parameters = 3;
+  repeated string required_data_types = 4;
+}
+
+// Tenant Messages
+message TenantMetricsRequest {
+  string tenant_id = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  repeated string metric_types = 4;
+}
+
+message TenantMetricsResponse {
+  string tenant_id = 1;
+  map<string, MetricValue> metrics = 2;
+  TenantUsage usage = 3;
+}
+
+message MetricValue {
+  double value = 1;
+  string unit = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message TenantUsage {
+  int64 streams_processed = 1;
+  int64 strategies_executed = 2;
+  double cpu_usage = 3;
+  double memory_usage = 4;
+  int64 storage_used = 5;
+}
+
+// Auth Messages
+message AuthRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+  string client_secret = 3;
+  repeated string scopes = 4;
+}
+
+message AuthResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_in = 3;
+  string token_type = 4;
+}
+
+message TokenValidationRequest {
+  string token = 1;
+  repeated string required_scopes = 2;
+}
+
+message TokenValidationResponse {
+  bool valid = 1;
+  string tenant_id = 2;
+  repeated string scopes = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+// MISSING: RefreshTokenRequest message
+message RefreshTokenRequest {
+  string refresh_token = 1;
+  string tenant_id = 2;
+}
+
+// MISSING: RefreshTokenResponse message  
+message RefreshTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_in = 3;
+  string token_type = 4;
+}
+
+// Tenant Management Messages
+message CreateTenantRequest {
+  string name = 1;
+  string email = 2;
+  TenantLimits limits = 3;
+  repeated string allowed_strategies = 4;
+}
+
+message TenantResponse {
+  string tenant_id = 1;
+  string name = 2;
+  TenantStatus status = 3;
+  TenantLimits limits = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// MISSING: TenantConfigRequest message
+message TenantConfigRequest {
+  string tenant_id = 1;
+}
+
+// MISSING: TenantConfigResponse message
+message TenantConfigResponse {
+  string tenant_id = 1;
+  TenantConfig config = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+// MISSING: TenantConfig message
+message TenantConfig {
+  TenantLimits limits = 1;
+  repeated string allowed_strategies = 2;
+  repeated string enabled_strategies = 3;
+  map<string, google.protobuf.Struct> strategy_configs = 4;
+  map<string, string> settings = 5;
+}
+
+// MISSING: UpdateLimitsRequest message
+message UpdateLimitsRequest {
+  string tenant_id = 1;
+  TenantLimits limits = 2;
+  string reason = 3;
+  string updated_by = 4;
+}
+
+message TenantLimits {
+  int32 max_concurrent_streams = 1;
+  int32 max_strategies_per_hour = 2;
+  int64 max_storage_mb = 3;
+  int32 rate_limit_per_minute = 4;
+}
+
+// Enums
+enum DataType {
+  MARKET_DATA = 0;
+  IOT_SENSOR = 1;
+  ECOMMERCE_EVENT = 2;
+  LOG_EVENT = 3;
+  CUSTOM = 4;
+}
+
+enum ResultType {
+  PREDICTION = 0;
+  ANOMALY = 1;
+  RECOMMENDATION = 2;
+  CLASSIFICATION = 3;
+  AGGREGATION = 4;
+}
+
+enum AlertLevel {
+  INFO = 0;
+  WARNING = 1;
+  ERROR = 2;
+  CRITICAL = 3;
+}
+
+enum ExecutionStatus {
+  PENDING = 0;
+  RUNNING = 1;
+  COMPLETED = 2;
+  FAILED = 3;
+  CANCELLED = 4;
+}
+
+enum TenantStatus {
+  ACTIVE = 0;
+  SUSPENDED = 1;
+  INACTIVE = 2;
+}

@@ -1,0 +1,170 @@
+services:
+  # Infrastructure Services
+  mongodb:
+    image: mongo:7
+    container_name: stratosmesh-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: stratosmesh-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: password
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: stratosmesh-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # Application Services
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    container_name: stratosmesh-auth
+    ports:
+      - "50051:50051"
+    environment:
+      - NODE_ENV=development
+      - PORT=50051
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/stratosmesh?authSource=admin
+      - JWT_SECRET=5e6025eaa2bdbe6cbd0567496e362a36
+      - JWT_REFRESH_SECRET=19eb1d9be04e3ff00b503e34bb2b53ae
+    volumes:
+      - ./services/auth-service/src:/app/services/auth-service/src:ro
+      - ./shared:/app/shared:ro
+      - /app/node_modules
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+
+  tenant-manager:
+    build:
+      context: .
+      dockerfile: services/tenant-manager/Dockerfile
+    container_name: stratosmesh-tenant
+    ports:
+      - "50054:50054"
+    environment:
+      - NODE_ENV=development
+      - PORT=50054
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/stratosmesh?authSource=admin
+    volumes:
+      - ./services/tenant-manager/src:/app/services/tenant-manager/src:ro
+      - ./shared:/app/shared:ro
+      - /app/node_modules
+    depends_on:
+      - mongodb
+    restart: unless-stopped
+
+  strategy-engine:
+    build:
+      context: .
+      dockerfile: services/strategy-engine/Dockerfile
+    container_name: stratosmesh-strategy
+    ports:
+      - "50053:50053"
+    environment:
+      - NODE_ENV=development
+      - PORT=50053
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/stratosmesh?authSource=admin
+      - RABBITMQ_URI=amqp://admin:password@rabbitmq:5672
+    volumes:
+      - ./services/strategy-engine/src:/app/services/strategy-engine/src:ro
+      - ./shared:/app/shared:ro
+      - ./workers:/app/workers:ro
+      - /app/node_modules
+    depends_on:
+      - mongodb
+      - rabbitmq
+    restart: unless-stopped
+
+  stream-ingestion:
+    build:
+      context: .
+      dockerfile: services/stream-ingestion/Dockerfile
+    container_name: stratosmesh-stream
+    ports:
+      - "50052:50052"
+    environment:
+      - NODE_ENV=development
+      - PORT=50052
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/stratosmesh?authSource=admin
+      - RABBITMQ_URI=amqp://admin:password@rabbitmq:5672
+      - REDIS_URI=redis://redis:6379
+    volumes:
+      - ./services/stream-ingestion/src:/app/services/stream-ingestion/src:ro
+      - ./shared:/app/shared:ro
+      - ./workers:/app/workers:ro
+      - /app/node_modules
+    depends_on:
+      - mongodb
+      - rabbitmq
+      - redis
+    restart: unless-stopped
+
+  notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    container_name: stratosmesh-notification
+    ports:
+      - "50055:50055"
+    environment:
+      - NODE_ENV=development
+      - PORT=50055
+      - RABBITMQ_URI=amqp://admin:password@rabbitmq:5672
+      - JWT_SECRET=5e6025eaa2bdbe6cbd0567496e362a36
+    volumes:
+      - ./services/notification/src:/app/services/notification/src:ro
+      - ./shared:/app/shared:ro
+      - ./workers:/app/workers:ro
+      - /app/node_modules
+    depends_on:
+      - rabbitmq
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: stratosmesh-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    volumes:
+      - ./services/gateway/src:/app/services/gateway/src:ro
+      - ./shared:/app/shared:ro
+      - /app/node_modules
+    depends_on:
+      - auth-service
+      - tenant-manager
+      - strategy-engine
+      - stream-ingestion
+      - notification
+    restart: unless-stopped
+
+volumes:
+  mongodb_data:
+  rabbitmq_data:
+  redis_data:
