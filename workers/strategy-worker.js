@@ -1,23 +1,23 @@
+
 const { parentPort } = require("worker_threads");
 const { MongoClient } = require("mongodb");
 
-let db: any;
-type StrategyId = keyof typeof strategies;
+let db;
 
 // Initialize MongoDB connection in worker
 MongoClient.connect(
   process.env.MONGODB_URI || "mongodb://localhost:27017"
-).then((client: any) => {
+).then((client) => {
   db = client.db("stratosmesh");
   console.log("Worker connected to MongoDB");
 });
 
-// Built-in strategies (same as above, but in worker context)
+//
 const strategies = {
-  moving_average: async (data: any, config: any) => {
+  moving_average: async (data, config) => {
     const period = config.period || 20;
-    const values = data.map((d: any) => d.payload.price).slice(-period);
-    const average = values.reduce((sum: any, val: any) => sum + val, 0) / values.length;
+    const values = data.map((d) => d.payload.price).slice(-period);
+    const average = values.reduce((sum, val) => sum + val, 0) / values.length;
 
     return {
       resultId: `ma_${Date.now()}`,
@@ -28,12 +28,12 @@ const strategies = {
     };
   },
 
-  anomaly_detection: async (data: any, config: any) => {
+  anomaly_detection: async (data, config) => {
     const threshold = config.threshold || 2;
-    const values = data.map((d: any) => d.payload.value);
-    const mean = values.reduce((sum: any, val: any) => sum + val, 0) / values.length;
+    const values = data.map((d) => d.payload.value);
+    const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
     const stdDev = Math.sqrt(
-      values.reduce((sum: any, val: any) => sum + Math.pow(val - mean, 2), 0) /
+      values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) /
         values.length
     );
 
@@ -56,7 +56,7 @@ const strategies = {
   },
 };
 
-parentPort.on("message", async (message: any) => {
+parentPort.on("message", async (message) => {
   try {
     const { type, tenantId, payload, correlationId } = message;
 
@@ -75,7 +75,7 @@ parentPort.on("message", async (message: any) => {
       }
 
       // Execute strategy
-      const strategy = strategies[strategyId as StrategyId];
+      const strategy = strategies[strategyId];
       if (!strategy) {
         throw new Error(`Strategy ${strategyId} not found`);
       }
@@ -97,7 +97,7 @@ parentPort.on("message", async (message: any) => {
 
       const results = [];
       for (const strategyId of enabledStrategies) {
-        const strategy = strategies[strategyId as StrategyId];
+        const strategy = strategies[strategyId];
         if (strategy) {
           const result = await strategy(
             [streamData],
@@ -113,11 +113,10 @@ parentPort.on("message", async (message: any) => {
         correlationId,
       });
     }
-  } catch (error: unknown) {
-    const err = error as Error;
+  } catch (error) {
     parentPort.postMessage({
       success: false,
-      error: err.message,
+      error: error.message,
       correlationId: message.correlationId,
     });
   }

@@ -11,8 +11,8 @@ export class MetricsCollector {
         name,
         new Counter({
           name,
-          help: `Counter for ${name}`,
-          labelNames: Object.keys(labels || {}),
+          help: `Counter for ${name}`,        // description for a metric
+          labelNames: Object.keys(labels || {}),    //allows catogrization method="GET"
         })
       );
     }

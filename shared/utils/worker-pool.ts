@@ -76,11 +76,10 @@ export class WorkerPool extends EventEmitter {
   }
 
   private handleWorkerMessage(worker: Worker, result: any) {
-    // returning worker to available pool
-    this.availableWorkers.push(worker);
-
-    // process next task in the queue
-    this.processNextTask();
+    if (this.workers.includes(worker)) {
+      this.availableWorkers.push(worker);
+      setImmediate(() => this.processNextTask()); // Defer to next tick
+    }
   }
 
   private processNextTask() {
@@ -92,7 +91,7 @@ export class WorkerPool extends EventEmitter {
     const worker = this.availableWorkers.shift()!;
 
     const messageHandler = (result: any) => {
-      worker.off("message", messageHandler);
+      worker.off("message", messageHandler);  //ensures this function do not called multiple times
 
       if (result.success) {
         task.resolve(result.result);

@@ -2,6 +2,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
 import * as amqp from "amqplib";
+import path from "path";
 // import type { Channel } from "amqplib";
 import type { Channel, ChannelModel } from "amqplib";
 import { Logger } from "../../../shared/utils/logger";
@@ -155,7 +156,7 @@ class DataStreamServiceImpl {
             totalDataSize: { $sum: "$dataSize" },
           },
         },
-      ];
+      ];    // this runs a mongodb aggregation
 
       const results = await this.db
         .collection("stream_metrics")
@@ -281,8 +282,8 @@ async function startServer() {
   );
 
   const packageDefinition = protoLoader.loadSync(
-    "../../../shared/proto/analytics.proto"
-  );
+      path.join(__dirname, "../../../shared/proto/analytics.proto")
+    );
   const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
   const server = new grpc.Server();

@@ -60,8 +60,11 @@ class NotificationService {
       try {
         const token = socket.handshake.auth.token;
         const jwtSecret =
-          process.env.JWT_SECRET || "5e8f894aa9a8cdf107d46b2b79801a43";
+          process.env.JWT_SECRET;
 
+        if (!jwtSecret) {
+          throw new Error("JWT_SECRET environment variable is required");
+        }
         const decoded = jwt.verify(token, jwtSecret) as any;
         socket.data.tenantId = decoded.tenantId;
         next();

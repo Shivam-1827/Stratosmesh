@@ -3,6 +3,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
 import bcrypt from "bcrypt";
+import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { Logger } from "../../../shared/utils/logger";
 
@@ -18,6 +19,25 @@ class TenantServiceImpl {
   async createTenant(call: any, callback: any) {
     try {
       const { name, email, limits, allowed_strategies } = call.request;
+
+      // Validate required fields
+      if (!name || !email) {
+        return callback(new Error("Name and email are required"));
+      }
+
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return callback(new Error("Invalid email format"));
+      }
+
+      // Validate limits are positive numbers
+      if (
+        limits?.max_concurrent_streams &&
+        limits.max_concurrent_streams <= 0
+      ) {
+        return callback(new Error("Limits must be positive numbers"));
+      }
 
       const tenantId = uuidv4();
       const clientId = `client_${Date.now()}`;
@@ -77,6 +97,10 @@ class TenantServiceImpl {
   async getTenantConfig(call: any, callback: any) {
     try {
       const { tenant_id } = call.request;
+
+      if(!tenant_id){
+        return callback(new Error("Missing tenant Id"));
+      }
 
       const tenant = await this.db
         .collection("tenants")
@@ -144,17 +168,35 @@ class TenantServiceImpl {
     }
   }
 
+  // ✅ SOLUTION: Add proper indexes in tenant-manager
   private async createTenantCollections(tenantId: string) {
-    // Create indexes for tenant-specific queries
-    await this.db
-      .collection("stream_data")
-      .createIndex({ tenantId: 1, timestamp: -1 });
-    await this.db
-      .collection("strategy_results")
-      .createIndex({ tenantId: 1, timestamp: -1 });
-    await this.db
-      .collection("audit_logs")
-      .createIndex({ tenantId: 1, timestamp: -1 });
+    // Existing indexes are good, but add more specific ones
+    await this.db.collection("stream_data").createIndex({
+      tenantId: 1,
+      streamId: 1,
+      timestamp: -1,
+    });
+
+    await this.db.collection("stream_data").createIndex({
+      tenantId: 1,
+      dataType: 1,
+      timestamp: -1,
+    });
+
+    await this.db.collection("strategy_results").createIndex(
+      {
+        tenantId: 1,
+        executionId: 1,
+      },
+      { unique: true }
+    );
+
+    await this.db.collection("refresh_tokens").createIndex(
+      {
+        expiresAt: 1,
+      },
+      { expireAfterSeconds: 0 }
+    ); // Auto-cleanup expired tokens
   }
 }
 
@@ -166,8 +208,8 @@ async function startServer() {
   const db = client.db("stratosmesh");
 
   const packageDefinition = protoLoader.loadSync(
-    "../../../shared/proto/analytics.proto"
-  );
+      path.join(__dirname, "../../../shared/proto/analytics.proto")
+    );;
   const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
   const server = new grpc.Server();

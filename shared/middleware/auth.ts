@@ -20,6 +20,13 @@ export const authMiddleware = (req: AuthenticatedRequest, res: Response, next: N
         const jwtSecret = process.env.JWT_SECRET || '5e8f894aa9a8cdf107d46b2b79801a43';
     
         const decoded = jwt.verify(token, jwtSecret) as any;
+        const now = Math.floor(Date.now() / 1000);
+        const timeToExpiry = decoded.exp - now;
+
+        if (timeToExpiry < 300) {
+          // Less than 5 minutes
+          res.setHeader("X-Token-Refresh-Needed", "true");
+        }
         req.tenantId = decoded.tenantId;
         req.scopes = decoded.scopes || [];
         

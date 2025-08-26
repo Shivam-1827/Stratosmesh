@@ -3,6 +3,7 @@ import * as protoLoader from "@grpc/proto-loader";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import dotenv from 'dotenv';
+import path from "path";
 import { MongoClient, Db } from "mongodb";
 import { Logger } from "../../../shared/utils/logger";
 import {
@@ -38,6 +39,9 @@ class AuthServiceImpl {
     try {
       const { tenant_id, client_id, client_secret, scopes } = call.request;
 
+      if(!tenant_id || !client_id){
+        return callback(new Error("Missing tenant id or client id"));
+      }
       // validating client credentials
       const tenant = await this.db.collection("tenants").findOne({
         tenantId: tenant_id,
@@ -102,6 +106,10 @@ class AuthServiceImpl {
     try {
       const { token, required_scopes } = call.request;
 
+      if(!token){
+        return callback(new Error("Missing token! Please provide a token"));
+      }
+
       const decoded = jwt.verify(token, this.jwtSecret) as any;
 
       // Check if tenant is still active
@@ -143,6 +151,10 @@ class AuthServiceImpl {
   ) {
     try {
       const { refresh_token, tenant_id } = call.request;
+
+      if(!refresh_token){
+        return callback(new Error("Refresh token is missing"));
+      }
 
       // Verify refresh token
       const decoded = jwt.verify(refresh_token, this.jwtRefreshSecret) as any;
@@ -223,7 +235,7 @@ async function startServer() {
   const db = client.db("stratosmesh");
 
   const packageDefinition = protoLoader.loadSync(
-    "../../../shared/proto/analytics.proto"
+    path.join(__dirname, "../../../shared/proto/analytics.proto")
   );
   const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
