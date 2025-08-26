@@ -1,6 +1,7 @@
 
 const { parentPort } = require("worker_threads");
 const { MongoClient } = require("mongodb");
+const ARIMAStrategy = require("./strategies/arima-strategy");
 
 let db;
 
@@ -53,6 +54,57 @@ const strategies = {
       confidence: isAnomaly ? 0.9 : 0.3,
       metrics: { mean, std_dev: stdDev },
     };
+  },
+
+  arima_prediction: {
+    execute: async (data, config) => {
+      const arimaStrategy = new ARIMAStrategy();
+      return await arimaStrategy.execute(data, config);
+    },
+  },
+
+  // Advanced hybrid strategy combining ARIMA + Moving Average
+  hybrid_arima_ma: {
+    execute: async (data, config) => {
+      // Run both ARIMA and Moving Average
+      const arimaResult = await strategies.arima_prediction.execute(
+        data,
+        config
+      );
+      const maResult = await strategies.moving_average.execute(data, config);
+
+      // Combine signals with weighted confidence
+      const arimaWeight = arimaResult.confidence;
+      const maWeight = 0.7; // Lower weight for simpler MA
+
+      const combinedConfidence =
+        (arimaWeight * arimaResult.confidence + maWeight * 0.8) /
+        (arimaWeight + maWeight);
+
+      return {
+        resultId: `hybrid_${Date.now()}`,
+        type: "PREDICTION",
+        data: {
+          arima: arimaResult.data,
+          movingAverage: maResult.data,
+          combinedSignal:
+            arimaResult.confidence > 0.8
+              ? arimaResult.data.signal
+              : maResult.data.signal,
+          consensus:
+            arimaResult.data.signal.action === maResult.data.signal
+              ? "STRONG"
+              : "WEAK",
+        },
+        confidence: combinedConfidence,
+        metrics: {
+          arimaAccuracy: arimaResult.metrics.mape,
+          maDeviation: maResult.metrics.deviation,
+          signalAlignment:
+            arimaResult.data.signal.action === maResult.data.signal ? 1 : 0,
+        },
+      };
+    },
   },
 };
 

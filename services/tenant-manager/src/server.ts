@@ -62,11 +62,25 @@ class TenantServiceImpl {
         allowedStrategies: allowed_strategies || [
           "moving_average",
           "anomaly_detection",
+          "arima_prediction",
+          "hybrid_arima_ma",
         ],
-        enabledStrategies: ["moving_average"],
+        enabledStrategies: ["moving_average", "arima_prediction"],
         strategyConfigs: {
           moving_average: { period: 20 },
           anomaly_detection: { threshold: 2 },
+          arima_prediction: {
+            // New ARIMA config
+            p: 2,
+            d: 1,
+            q: 2,
+            steps: 5,
+          },
+          hybrid_arima_ma: {
+            // Hybrid config
+            arimaConfig: { p: 2, d: 1, q: 2, steps: 3 },
+            maConfig: { period: 20 },
+          },
         },
         createdAt: new Date(),
         updatedAt: new Date(),

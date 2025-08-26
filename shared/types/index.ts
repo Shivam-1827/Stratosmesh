@@ -18,12 +18,27 @@ export interface StreamProcessor {
   validateData(data: StreamData): boolean;
 }
 
-export interface StrategyPlugin {
+export interface StrategyPlugin1 {
   id: string;
   name: string;
   version: string;
   execute(data: any[], config: any): Promise<AnalysisResult>;
   validate(config: any): boolean;
+}
+
+export interface StrategyPlugin {
+  id: string;
+  name: string;
+  version: string;
+  requiredDataPoints: number;
+
+  parameters: any[];
+
+  // Change here
+  validate(config: any): { valid: boolean; errors: string[] };
+
+  execute(data: any[], config: any): Promise<AnalysisResult>;
+  backtest?(historicalData: any[], config: any): Promise<any>;
 }
 
 export interface StreamData {

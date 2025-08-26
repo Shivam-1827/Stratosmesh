@@ -7,7 +7,10 @@ import { Worker } from "worker_threads";
 import path from "path";
 import { Logger } from "../../../shared/utils/logger";
 import { WorkerPool } from "../../../shared/utils/worker-pool";
-import { StrategyPlugin, WorkerMessage } from "../../../shared/types";
+import {
+  StrategyPlugin1,
+  StrategyPlugin, WorkerMessage,
+} from "../../../shared/types";
 
 const logger = new Logger("StrategyEngine");
 
@@ -16,7 +19,7 @@ class StrategyEngineService {
   private rabbitConnection: ChannelModel;
   private channel!: Channel; // Fix 1: Use definite assignment assertion
   private workerPool: WorkerPool;
-  private strategies: Map<string, StrategyPlugin>;
+  private strategies: Map<string, StrategyPlugin1>;
 
   constructor(db: Db, rabbitConnection: ChannelModel) {
     this.db = db;
@@ -54,7 +57,7 @@ class StrategyEngineService {
 
   private async loadStrategies() {
     // Load built-in strategies
-    const movingAverageStrategy: StrategyPlugin = {
+    const movingAverageStrategy: StrategyPlugin1 = {
       id: "moving_average",
       name: "Moving Average",
       version: "1.0.0",
@@ -77,7 +80,7 @@ class StrategyEngineService {
       },
     };
 
-    const anomalyDetectionStrategy: StrategyPlugin = {
+    const anomalyDetectionStrategy: StrategyPlugin1 = {
       id: "anomaly_detection",
       name: "Anomaly Detection",
       version: "1.0.0",
@@ -112,8 +115,51 @@ class StrategyEngineService {
       },
     };
 
+    const arimaStrategy: StrategyPlugin1 = {
+      id: "arima_prediction",
+      name: "ARIMA Time Series Prediction",
+      version: "2.0.0",
+      execute: async (data: any[], config: any) => {
+        // This will be handled by worker thread
+        return await this.workerPool.execute({
+          type: "EXECUTE_STRATEGY",
+          strategyId: "arima_prediction",
+          data,
+          config,
+        });
+      },
+      validate: (config: any) => {
+        return config.p >= 0 && config.d >= 0 && config.q >= 0;
+      },
+    };
+
+    const hybridStrategy: StrategyPlugin1 = {
+      id: "hybrid_arima_ma",
+      name: "Hybrid ARIMA + Moving Average",
+      version: "1.0.0",
+      execute: async (data: any[], config: any) => {
+        return await this.workerPool.execute({
+          type: "EXECUTE_STRATEGY",
+          strategyId: "hybrid_arima_ma",
+          data,
+          config,
+        });
+      },
+      validate: (config: any) => {
+        const arimaValid =
+          config.arimaConfig &&
+          config.arimaConfig.p >= 0 &&
+          config.arimaConfig.d >= 0 &&
+          config.arimaConfig.q >= 0;
+        const maValid = config.maConfig && config.maConfig.period > 0;
+        return arimaValid && maValid;
+      },
+    };
+
     this.strategies.set("moving_average", movingAverageStrategy);
     this.strategies.set("anomaly_detection", anomalyDetectionStrategy);
+     this.strategies.set("arima_prediction", arimaStrategy);
+     this.strategies.set("hybrid_arima_ma", hybridStrategy);
 
     logger.info(`Loaded ${this.strategies.size} strategies`);
   }

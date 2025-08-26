@@ -238,3 +238,99 @@ enum TenantStatus {
   SUSPENDED = 1;
   INACTIVE = 2;
 }
+
+
+service LLMProcessorService {
+  rpc ProcessUniversalData(UniversalDataRequest) returns (ProcessedDataResponse);
+  rpc AnalyzeDataFormat(DataFormatRequest) returns (DataFormatResponse);
+}
+
+service EnhancedStreamService {
+  rpc ProcessRealTimeStream(stream StreamDataRequest) returns (stream AnalysisResponse);
+  rpc ProcessLLMData(LLMDataRequest) returns (LLMDataResponse);  // NEW
+  rpc GetTenantMetrics(TenantMetricsRequest) returns (TenantMetricsResponse);
+  rpc ExecuteStrategy(StrategyRequest) returns (StrategyResponse);
+}
+
+// New message types
+message UniversalDataRequest {
+  string tenant_id = 1;
+  string stream_id = 2;
+  oneof input_data {
+    string raw_text = 3;
+    bytes file_data = 4;
+    string file_url = 5;
+    google.protobuf.Struct structured_data = 6;
+  }
+  string data_description = 7;
+  string desired_format = 8;
+  map<string, string> metadata = 9;
+}
+
+message ProcessedDataResponse {
+  bool success = 1;
+  string detected_type = 2;
+  repeated ProcessedRecord records = 3;
+  DataSchema schema = 4;
+  double confidence = 5;
+  repeated string processing_steps = 6;
+}
+
+message ProcessedRecord {
+  google.protobuf.Timestamp timestamp = 1;
+  google.protobuf.Struct payload = 2;
+  map<string, string> metadata = 3;
+}
+
+message LLMDataRequest {
+  string tenant_id = 1;
+  string stream_id = 2;
+  ProcessedDataResponse processed_data = 3;
+  string original_format = 4;
+}
+
+message LLMDataResponse {
+  bool success = 1;
+  int32 records_processed = 2;
+  string detected_type = 3;
+  double confidence = 4;
+  repeated ProcessingResult results = 5;
+}
+
+// Missing message for AnalyzeDataFormat RPC
+message DataFormatRequest {
+  string tenant_id = 1;
+  oneof input_sample {
+    string text_sample = 2;
+    bytes file_sample = 3;
+  }
+  string filename = 4;
+  string mime_type = 5;
+}
+
+message DataFormatResponse {
+  bool success = 1;
+  string detected_format = 2;
+  string data_type = 3;
+  double confidence = 4;
+  DataSchema suggested_schema = 5;
+  repeated string extraction_methods = 6;
+}
+
+// Missing DataSchema message (referenced in ProcessedDataResponse)
+message DataSchema {
+  string timestamp_field = 1;
+  repeated string value_fields = 2;
+  repeated string category_fields = 3;
+  map<string, string> field_types = 4;
+  repeated string required_fields = 5;
+}
+
+// Missing ProcessingResult message (referenced in LLMDataResponse)
+message ProcessingResult {
+  string record_id = 1;
+  google.protobuf.Timestamp processed_at = 2;
+  bool success = 3;
+  string error_message = 4;
+  map<string, string> metadata = 5;
+}

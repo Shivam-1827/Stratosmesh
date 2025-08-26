@@ -156,7 +156,7 @@ class DataStreamServiceImpl {
             totalDataSize: { $sum: "$dataSize" },
           },
         },
-      ];    // this runs a mongodb aggregation
+      ]; // this runs a mongodb aggregation
 
       const results = await this.db
         .collection("stream_metrics")
@@ -265,6 +265,79 @@ class DataStreamServiceImpl {
       Buffer.from(JSON.stringify(message)),
       { persistent: true }
     );
+  }
+
+  async processLLMData(call: any, callback: any) {
+    try {
+      const { tenant_id, stream_id, processed_data, original_format } =
+        call.request;
+
+      logger.info(
+        `Processing LLM data for tenant ${tenant_id}, detected type: ${processed_data.detected_type}`
+      );
+
+      const results = [];
+
+      // Process each record from LLM
+      for (const record of processed_data.records) {
+        const streamData = {
+          tenantId: tenant_id,
+          streamId: stream_id,
+          dataType: this.mapLLMTypeToDataType(processed_data.detected_type),
+          payload: record.payload,
+          timestamp: new Date(record.timestamp.seconds * 1000),
+          metadata: {
+            ...record.metadata,
+            llm_processed: true,
+            original_format: original_format,
+            confidence: processed_data.confidence,
+          },
+        };
+
+        // Store in database
+        await this.storeStreamData(streamData);
+
+        // Queue for strategy processing
+        await this.queueForProcessing(streamData);
+
+        results.push({
+          record_id: `${stream_id}_${Date.now()}`,
+          timestamp: streamData.timestamp,
+        });
+      }
+
+      // Update metrics
+      this.metrics.incrementCounter("llm_streams_processed_total", {
+        tenant_id: tenant_id,
+        detected_type: processed_data.detected_type,
+        original_format: original_format,
+      });
+
+      callback(null, {
+        success: true,
+        records_processed: results.length,
+        detected_type: processed_data.detected_type,
+        confidence: processed_data.confidence,
+        results: results,
+      });
+    } catch (error) {
+      logger.error("LLM data processing error:", error);
+      callback(error);
+    }
+  }
+
+  private mapLLMTypeToDataType(llmType: string): string {
+    const mapping = {
+      financial_data: "MARKET_DATA",
+      sensor_data: "IOT_SENSOR",
+      sales_data: "ECOMMERCE_EVENT",
+      log_data: "LOG_EVENT",
+      social_media: "CUSTOM",
+      unknown_data: "CUSTOM",
+    };
+
+    // @ts-ignore
+    return mapping[llmType] || "CUSTOM";
   }
 }
 
