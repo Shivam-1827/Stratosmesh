@@ -1,49 +1,50 @@
-import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import multer from "multer";
-import {createProxyMiddleware} from 'http-proxy-middleware';
-import {authMiddleware} from '../../../shared/middleware/auth';
-import {Logger} from '../../../shared/utils/logger';
+import path from "path";
+import { createProxyMiddleware } from "http-proxy-middleware";
+import { authMiddleware } from "../../../shared/middleware/auth";
+import { Logger } from "../../../shared/utils/logger";
 
 dotenv.config();
 
 const app = express();
-const logger = new Logger('Gateway');
+const logger = new Logger("Gateway");
 
-// using middleware for the security
+// Security middleware
 app.use(helmet());
 app.use(cors());
 
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: 'To many requests from this IP'
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: "Too many requests from this IP",
 });
 app.use(limiter);
 
-app.use(express.json({limit: '10mb'}));
+app.use(express.json({ limit: "10mb" }));
 
-app.get('/health', (req, res) => {
-    res.json({status: 'healthy', timestamp: new Date().toISOString()});
+app.get("/health", (req, res) => {
+  res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
-class EnhancedGateway {
+class UniversalGateway {
   private llmClient: any;
   private streamClient: any;
 
   constructor() {
     this.setupGrpcClients();
-    this.setupUniversalRoutes();
+    this.setupUniversalRoute();
   }
 
   private setupGrpcClients() {
     const packageDefinition = protoLoader.loadSync(
-      "./shared/proto/analytics.proto"
+      path.join(__dirname, "../../../shared/proto/analytics.proto")
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
@@ -60,29 +61,19 @@ class EnhancedGateway {
     );
   }
 
-  private setupUniversalRoutes() {
+  private setupUniversalRoute() {
     const upload = multer({
       storage: multer.memoryStorage(),
-      limits: { fileSize: 100 * 1024 * 1024 },
+      limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
     });
 
-    // Universal data endpoint
+    // Single universal endpoint for all data types
     app.post(
-      "/api/stream/universal",
+      "/api/data/universal",
       authMiddleware,
       upload.single("file"),
       this.handleUniversalData.bind(this)
     );
-
-    // Text data endpoint
-    app.post(
-      "/api/stream/text",
-      authMiddleware,
-      this.handleTextData.bind(this)
-    );
-
-    // URL data endpoint
-    app.post("/api/stream/url", authMiddleware, this.handleUrlData.bind(this));
   }
 
   async handleUniversalData(req: any, res: any) {
@@ -90,34 +81,60 @@ class EnhancedGateway {
       const tenantId = req.tenantId; // From auth middleware
       const { stream_id, data_description, desired_format } = req.body;
 
+      if (!stream_id) {
+        return res.status(400).json({ error: "stream_id is required" });
+      }
+
       // Prepare request for LLM processor
       let llmRequest: any = {
         tenant_id: tenantId,
         stream_id: stream_id,
-        data_description: data_description || "Unknown data",
+        data_description: data_description || "User uploaded data",
         desired_format: desired_format || "time_series",
       };
 
-      // Handle different input types
+      // Handle different input types automatically
       if (req.file) {
+        // File upload
         llmRequest.file_data = req.file.buffer;
+        logger.info(
+          `Processing file: ${req.file.originalname} (${req.file.mimetype})`
+        );
       } else if (req.body.text) {
+        // Raw text
         llmRequest.raw_text = req.body.text;
+        logger.info("Processing raw text data");
       } else if (req.body.url) {
+        // URL
         llmRequest.file_url = req.body.url;
+        logger.info(`Processing URL: ${req.body.url}`);
       } else if (req.body.data) {
+        // Structured data
         llmRequest.structured_data = req.body.data;
+        logger.info("Processing structured data");
       } else {
-        return res.status(400).json({ error: "No data provided" });
+        return res.status(400).json({
+          error:
+            "No data provided. Please provide file, text, url, or structured data.",
+        });
       }
 
       // Process with LLM
+      logger.info(
+        `Starting LLM processing for tenant ${tenantId}, stream ${stream_id}`
+      );
+
       const llmResult = await new Promise((resolve, reject) => {
         this.llmClient.processUniversalData(
           llmRequest,
           (error: any, response: any) => {
-            if (error) reject(error);
-            else resolve(response);
+            if (error) {
+              logger.error("LLM processing error:", error);
+              reject(error);
+            } else {
+              logger.info(`LLM detected data type: ${response.detected_type}`);
+              resolve(response);
+            }
           }
         );
       });
@@ -129,11 +146,18 @@ class EnhancedGateway {
             tenant_id: tenantId,
             stream_id: stream_id,
             processed_data: llmResult,
-            original_format: req.file ? req.file.mimetype : "text",
+            original_format: req.file ? req.file.mimetype : "text/plain",
           },
           (error: any, response: any) => {
-            if (error) reject(error);
-            else resolve(response);
+            if (error) {
+              logger.error("Stream processing error:", error);
+              reject(error);
+            } else {
+              logger.info(
+                `Stream processing completed: ${response.records_processed} records`
+              );
+              resolve(response);
+            }
           }
         );
       });
@@ -141,71 +165,67 @@ class EnhancedGateway {
       res.json({
         success: true,
         message: "Data processed successfully",
+        stream_id,
         llm_analysis: {
           detected_type: (llmResult as any).detected_type,
           confidence: (llmResult as any).confidence,
           records_found: (llmResult as any).records.length,
+          processing_steps: (llmResult as any).processing_steps,
         },
         stream_result: streamResult,
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
       const err = error as Error;
-      console.error("Universal data processing error:", error);
-      res.status(500).json({ error: err.message });
+      logger.error("Universal data processing error:", error);
+      res.status(500).json({
+        error: err.message,
+        stream_id: req.body.stream_id,
+        timestamp: new Date().toISOString(),
+      });
     }
-  }
-
-  async handleTextData(req: any, res: any) {
-    // Similar to handleUniversalData but specifically for text
-    const { text, stream_id, data_description } = req.body;
-
-    req.body = { text, stream_id, data_description };
-    return this.handleUniversalData(req, res);
-  }
-
-  async handleUrlData(req: any, res: any) {
-    // Similar to handleUniversalData but specifically for URLs
-    const { url, stream_id, data_description } = req.body;
-
-    req.body = { url, stream_id, data_description };
-    return this.handleUniversalData(req, res);
   }
 }
 
+// Initialize universal gateway
+const universalGateway = new UniversalGateway();
+
+// Legacy service proxies (keep for backward compatibility if needed)
 type ServiceConfig = {
   target: string;
   pathRewrite: Record<string, string>;
-  middleware?: Array<(req: express.Request, res: express.Response, next: express.NextFunction) => void>;
+  middleware?: Array<
+    (
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => void
+  >;
 };
 
 const services: Record<string, ServiceConfig> = {
-  '/api/auth': {
-    target: 'http://auth-service:50051',
-    pathRewrite: { '^/api/auth': '' }
+  "/api/auth": {
+    target: "http://auth-service:50051",
+    pathRewrite: { "^/api/auth": "" },
   },
-  '/api/stream': {
-    target: 'http://stream-ingestion:50052',
-    pathRewrite: { '^/api/stream': '' },
-    middleware: [authMiddleware]
+  "/api/tenant": {
+    target: "http://tenant-manager:50054",
+    pathRewrite: { "^/api/tenant": "" },
+    middleware: [authMiddleware],
   },
-  '/api/strategy': {
-    target: 'http://strategy-engine:50053',
-    pathRewrite: { '^/api/strategy': '' },
-    middleware: [authMiddleware]
+  "/api/strategy": {
+    target: "http://strategy-engine:50053",
+    pathRewrite: { "^/api/strategy": "" },
+    middleware: [authMiddleware],
   },
-  '/api/tenant': {
-    target: 'http://tenant-manager:50054',
-    pathRewrite: { '^/api/tenant': '' },
-    middleware: [authMiddleware]
+  "/api/notifications": {
+    target: "http://notification:50055",
+    pathRewrite: { "^/api/notifications": "" },
+    middleware: [authMiddleware],
   },
-  '/api/notifications': {
-    target: 'http://notification:50055',
-    pathRewrite: { '^/api/notifications': '' },
-    middleware: [authMiddleware]
-  }
 };
 
-// setup proxies
+// Setup service proxies
 Object.entries(services).forEach(([path, config]) => {
   if (config.middleware) {
     app.use(path, ...config.middleware);
@@ -217,17 +237,21 @@ Object.entries(services).forEach(([path, config]) => {
       target: config.target,
       changeOrigin: true,
       pathRewrite: config.pathRewrite,
-      // @ts-expect-error: onError is a valid runtime option but not typed in Options
+      // @ts-expect-error onError is missing from type defs
       onError: (err, req, res) => {
-        logger.error("Proxy error:", err);
-        res.status(502).json({ error: "Service unavailable" });
+        logger.error(`Proxy error for ${path}:`, err);
+        if (!res.headersSent) {
+          res.status(502).json({ error: "Service unavailable" });
+        }
       },
-    } as any)
+    })
   );
+
 });
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    logger.info(`Gateway is running on port ${PORT}`);
-})
+  logger.info(`Universal Gateway is running on port ${PORT}`);
+  logger.info("Universal data endpoint: POST /api/data/universal");
+});

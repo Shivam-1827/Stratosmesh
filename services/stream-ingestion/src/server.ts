@@ -3,7 +3,6 @@ import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
 import * as amqp from "amqplib";
 import path from "path";
-// import type { Channel } from "amqplib";
 import type { Channel, ChannelModel } from "amqplib";
 import { Logger } from "../../../shared/utils/logger";
 import { StreamData, TenantContext } from "../../../shared/types";
@@ -12,7 +11,7 @@ import { MetricsCollector } from "../../../shared/utils/metrics";
 
 const logger = new Logger("StreamIngestion");
 
-class DataStreamServiceImpl {
+class UniversalDataStreamServiceImpl {
   private db: Db;
   private rabbitConnection: amqp.ChannelModel;
   private channel!: Channel;
@@ -39,8 +38,88 @@ class DataStreamServiceImpl {
 
     await this.channel.assertQueue("stream.processing", { durable: true });
     await this.channel.assertQueue("strategy.tasks", { durable: true });
+
+    logger.info("Stream ingestion service initialized");
   }
 
+  // Universal LLM data processing (main entry point)
+  async processLLMData(call: any, callback: any) {
+    try {
+      const { tenant_id, stream_id, processed_data, original_format } =
+        call.request;
+
+      logger.info(
+        `Processing LLM data for tenant ${tenant_id}, stream ${stream_id}`
+      );
+      logger.info(
+        `Detected type: ${processed_data.detected_type}, confidence: ${processed_data.confidence}`
+      );
+
+      // Validate tenant
+      const tenant = await this.getTenantContext(tenant_id);
+      if (!tenant) {
+        return callback(new Error("Tenant not found or inactive"));
+      }
+
+      const results = [];
+
+      // Process each record from LLM processor
+      for (const record of processed_data.records) {
+        const streamData: StreamData = {
+          tenantId: tenant_id,
+          streamId: stream_id,
+          dataType: processed_data.detected_type, // Use LLM's detection directly
+          payload: record.payload,
+          timestamp: new Date(record.timestamp.seconds * 1000),
+          metadata: {
+            ...record.metadata,
+            llm_processed: true,
+            original_format: original_format,
+            confidence: processed_data.confidence,
+            processing_steps: processed_data.processing_steps,
+            schema: processed_data.schema,
+          },
+        };
+
+        // Store in database
+        await this.storeStreamData(streamData);
+
+        // Queue for strategy processing if auto-processing is enabled
+        await this.queueForProcessing(streamData, tenant);
+
+        results.push({
+          record_id: `${stream_id}_${Date.now()}_${results.length}`,
+          timestamp: streamData.timestamp,
+          data_type: streamData.dataType,
+        });
+      }
+
+      // Update metrics
+      this.metrics.incrementCounter("llm_streams_processed_total", {
+        tenant_id: tenant_id,
+        detected_type: processed_data.detected_type,
+        original_format: original_format,
+      });
+
+      callback(null, {
+        success: true,
+        records_processed: results.length,
+        detected_type: processed_data.detected_type,
+        confidence: processed_data.confidence,
+        results: results,
+      });
+
+      logger.info(
+        `Successfully processed ${results.length} records for tenant ${tenant_id}`
+      );
+    } catch (error) {
+      const err = error as Error;
+      logger.error("LLM data processing error:", err);
+      callback(new Error(`Processing failed: ${err.message}`));
+    }
+  }
+
+  // Legacy real-time stream processing (keep for backward compatibility)
   async processRealTimeStream(call: grpc.ServerDuplexStream<any, any>) {
     const tenantId = call.metadata.get("tenant-id")[0] as string;
     let streamCount = 0;
@@ -71,18 +150,18 @@ class DataStreamServiceImpl {
             return;
           }
 
-          // Prepare stream data
+          // Prepare stream data with flexible data type
           const streamData: StreamData = {
             tenantId: request.tenant_id,
             streamId: request.stream_id,
-            dataType: request.data_type,
+            dataType: request.data_type || "custom_data", // Accept any data type
             payload: request.payload,
             timestamp: new Date(request.timestamp.seconds * 1000),
             metadata: request.metadata || {},
           };
 
           await this.storeStreamData(streamData);
-          await this.queueForProcessing(streamData);
+          await this.queueForProcessing(streamData, tenant);
 
           // Acknowledge back
           call.write({
@@ -153,15 +232,17 @@ class DataStreamServiceImpl {
             _id: null,
             streamsProcessed: { $sum: 1 },
             avgProcessingTime: { $avg: "$processingTime" },
-            totalDataSize: { $sum: "$dataSize" },
+            totalDataSize: { $sum: { $ifNull: ["$dataSize", 0] } },
+            dataTypes: { $addToSet: "$dataType" },
           },
         },
-      ]; // this runs a mongodb aggregation
+      ];
 
       const results = await this.db
-        .collection("stream_metrics")
+        .collection("stream_data")
         .aggregate(pipeline)
         .toArray();
+
       const metrics = results[0] || {};
 
       callback(null, {
@@ -175,7 +256,14 @@ class DataStreamServiceImpl {
             value: metrics.avgProcessingTime || 0,
             unit: "ms",
           },
-          total_data_size: { value: metrics.totalDataSize || 0, unit: "bytes" },
+          total_data_size: {
+            value: metrics.totalDataSize || 0,
+            unit: "bytes",
+          },
+          data_types_processed: {
+            value: metrics.dataTypes?.length || 0,
+            unit: "count",
+          },
         },
         usage: {
           streams_processed: metrics.streamsProcessed || 0,
@@ -234,8 +322,14 @@ class DataStreamServiceImpl {
   }
 
   private async getTenantContext(tenantId: string): Promise<TenantContext> {
-    const tenant = await this.db.collection("tenants").findOne({ tenantId });
-    if (!tenant) throw new Error("Tenant not found");
+    const tenant = await this.db.collection("tenants").findOne({
+      tenantId,
+      status: "ACTIVE",
+    });
+
+    if (!tenant) {
+      throw new Error("Tenant not found or inactive");
+    }
 
     return {
       tenantId: tenant.tenantId,
@@ -246,148 +340,131 @@ class DataStreamServiceImpl {
   }
 
   private async storeStreamData(data: StreamData) {
-    await this.db
-      .collection("stream_data")
-      .insertOne({ ...data, storedAt: new Date() });
-  }
-
-  private async queueForProcessing(data: StreamData) {
-    const message = {
-      type: "PROCESS_STREAM",
-      tenantId: data.tenantId,
-      payload: data,
-      correlationId: `${data.streamId}_${Date.now()}`,
-    };
-
-    this.channel.publish(
-      "stream.data",
-      `stream.${data.tenantId}.${data.dataType}`,
-      Buffer.from(JSON.stringify(message)),
-      { persistent: true }
-    );
-  }
-
-  async processLLMData(call: any, callback: any) {
     try {
-      const { tenant_id, stream_id, processed_data, original_format } =
-        call.request;
-
-      logger.info(
-        `Processing LLM data for tenant ${tenant_id}, detected type: ${processed_data.detected_type}`
-      );
-
-      const results = [];
-
-      // Process each record from LLM
-      for (const record of processed_data.records) {
-        const streamData = {
-          tenantId: tenant_id,
-          streamId: stream_id,
-          dataType: this.mapLLMTypeToDataType(processed_data.detected_type),
-          payload: record.payload,
-          timestamp: new Date(record.timestamp.seconds * 1000),
-          metadata: {
-            ...record.metadata,
-            llm_processed: true,
-            original_format: original_format,
-            confidence: processed_data.confidence,
-          },
-        };
-
-        // Store in database
-        await this.storeStreamData(streamData);
-
-        // Queue for strategy processing
-        await this.queueForProcessing(streamData);
-
-        results.push({
-          record_id: `${stream_id}_${Date.now()}`,
-          timestamp: streamData.timestamp,
-        });
-      }
-
-      // Update metrics
-      this.metrics.incrementCounter("llm_streams_processed_total", {
-        tenant_id: tenant_id,
-        detected_type: processed_data.detected_type,
-        original_format: original_format,
-      });
-
-      callback(null, {
-        success: true,
-        records_processed: results.length,
-        detected_type: processed_data.detected_type,
-        confidence: processed_data.confidence,
-        results: results,
+      await this.db.collection("stream_data").insertOne({
+        ...data,
+        storedAt: new Date(),
+        processed: false,
+        dataSize: JSON.stringify(data.payload).length,
       });
     } catch (error) {
-      logger.error("LLM data processing error:", error);
-      callback(error);
+      logger.error("Error storing stream data:", error);
+      throw error;
     }
   }
 
-  private mapLLMTypeToDataType(llmType: string): string {
-    const mapping = {
-      financial_data: "MARKET_DATA",
-      sensor_data: "IOT_SENSOR",
-      sales_data: "ECOMMERCE_EVENT",
-      log_data: "LOG_EVENT",
-      social_media: "CUSTOM",
-      unknown_data: "CUSTOM",
-    };
+  private async queueForProcessing(data: StreamData, tenant: TenantContext) {
+    try {
+      // Check if tenant has auto-processing enabled
+      const autoProcessing = tenant.metadata?.autoProcessing !== false;
 
-    // @ts-ignore
-    return mapping[llmType] || "CUSTOM";
+      if (!autoProcessing) {
+        logger.info(`Auto-processing disabled for tenant ${data.tenantId}`);
+        return;
+      }
+
+      const message = {
+        type: "PROCESS_STREAM",
+        tenantId: data.tenantId,
+        payload: data,
+        correlationId: `${data.streamId}_${Date.now()}`,
+      };
+
+      this.channel.publish(
+        "stream.data",
+        `stream.${data.tenantId}.${data.dataType}`,
+        Buffer.from(JSON.stringify(message)),
+        { persistent: true }
+      );
+
+      logger.debug(`Queued for processing: ${data.tenantId}/${data.streamId}`);
+    } catch (error) {
+      logger.error("Error queueing for processing:", error);
+      // Don't throw - this shouldn't fail the main operation
+    }
   }
 }
 
 async function startServer() {
-  // MongoDB
-  const mongoClient = new MongoClient(
-    process.env.MONGODB_URI || "mongodb://localhost:27017"
-  );
-  await mongoClient.connect();
-  const db = mongoClient.db("stratosmesh");
+  try {
+    // MongoDB connection
+    const mongoClient = new MongoClient(
+      process.env.MONGODB_URI || "mongodb://localhost:27017"
+    );
+    await mongoClient.connect();
+    const db = mongoClient.db("stratosmesh");
+    logger.info("Connected to MongoDB");
 
-  // RabbitMQ
-  const rabbitConnection = await amqp.connect(
-    process.env.RABBITMQ_URI || "amqp://localhost"
-  );
+    // RabbitMQ connection
+    const rabbitConnection = await amqp.connect(
+      process.env.RABBITMQ_URI || "amqp://localhost"
+    );
+    logger.info("Connected to RabbitMQ");
 
-  const packageDefinition = protoLoader.loadSync(
+    // Load protobuf definition
+    const packageDefinition = protoLoader.loadSync(
       path.join(__dirname, "../../../shared/proto/analytics.proto")
     );
-  const proto = grpc.loadPackageDefinition(packageDefinition) as any;
+    const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
-  const server = new grpc.Server();
-  const dataStreamServiceImpl = new DataStreamServiceImpl(db, rabbitConnection);
-  await dataStreamServiceImpl.init();
+    // Create and initialize service
+    const dataStreamServiceImpl = new UniversalDataStreamServiceImpl(
+      db,
+      rabbitConnection
+    );
+    await dataStreamServiceImpl.init();
 
-  server.addService(proto.stratosmesh.analytics.DataStreamService.service, {
-    processRealTimeStream: dataStreamServiceImpl.processRealTimeStream.bind(
-      dataStreamServiceImpl
-    ),
-    getTenantMetrics: dataStreamServiceImpl.getTenantMetrics.bind(
-      dataStreamServiceImpl
-    ),
-    executeStrategy: dataStreamServiceImpl.executeStrategy.bind(
-      dataStreamServiceImpl
-    ),
-  });
-
-  const port = process.env.PORT || "50052";
-  server.bindAsync(
-    `0.0.0.0:${port}`,
-    grpc.ServerCredentials.createInsecure(),
-    (err, boundPort) => {
-      if (err) {
-        logger.error("Failed to start server:", err);
-        return;
+    // Create gRPC server
+    const server = new grpc.Server();
+    server.addService(
+      proto.stratosmesh.analytics.EnhancedStreamService.service,
+      {
+        processRealTimeStream: dataStreamServiceImpl.processRealTimeStream.bind(
+          dataStreamServiceImpl
+        ),
+        processLLMData: dataStreamServiceImpl.processLLMData.bind(
+          dataStreamServiceImpl
+        ),
+        getTenantMetrics: dataStreamServiceImpl.getTenantMetrics.bind(
+          dataStreamServiceImpl
+        ),
+        executeStrategy: dataStreamServiceImpl.executeStrategy.bind(
+          dataStreamServiceImpl
+        ),
       }
-      logger.info(`Stream ingestion service running on port ${boundPort}`);
-      server.start();
-    }
-  );
+    );
+
+    const port = process.env.PORT || "50052";
+    server.bindAsync(
+      `0.0.0.0:${port}`,
+      grpc.ServerCredentials.createInsecure(),
+      (err, boundPort) => {
+        if (err) {
+          logger.error("Failed to start server:", err);
+          process.exit(1);
+        }
+        logger.info(
+          `Universal Stream Ingestion service running on port ${boundPort}`
+        );
+        server.start();
+      }
+    );
+
+    // Graceful shutdown
+    process.on("SIGINT", async () => {
+      logger.info("Shutting down gracefully...");
+      server.forceShutdown();
+      await mongoClient.close();
+      await rabbitConnection.close();
+      process.exit(0);
+    });
+  } catch (error) {
+    logger.error("Server startup error:", error);
+    process.exit(1);
+  }
 }
 
-startServer().catch(console.error);
+startServer().catch((error) => {
+  logger.error("Fatal startup error:", error);
+  process.exit(1);
+});
