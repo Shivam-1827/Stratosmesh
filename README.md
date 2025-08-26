@@ -834,17 +834,6 @@ docker-compose logs -f auth-service
 node --inspect-brk=0.0.0.0:9229 services/auth-service/src/server.ts
 ```
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🤝 Support
-
-- **Documentation**: [docs.stratosmesh.com](https://docs.stratosmesh.com)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/stratosmesh/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/stratosmesh/discussions)
-- **Email**: support@stratosmesh.com
-
 ## 🙏 Acknowledgments
 
 - **gRPC Team** - High-performance RPC framework
@@ -858,8 +847,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**Built with ❤️ by the StratosMesh Team**
-
-[Website](https://stratosmesh.com) • [Documentation](https://docs.stratosmesh.com) • [Blog](https://blog.stratosmesh.com)
-
+**Built with ❤️ by Shivam Yadav**
 </div>
