@@ -12,7 +12,6 @@
 [![MongoDB](https://img.shields.io/badge/MongoDB-7.x-green.svg)](https://www.mongodb.com/)
 [![gRPC](https://img.shields.io/badge/gRPC-enabled-orange.svg)](https://grpc.io/)
 [![Gemini AI](https://img.shields.io/badge/Gemini-AI%20Powered-purple.svg)](https://ai.google/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
