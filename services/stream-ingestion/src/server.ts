@@ -8,6 +8,9 @@ import { Logger } from "../../../shared/utils/logger";
 import { StreamData, TenantContext } from "../../../shared/types";
 import { RateLimiter } from "../../../shared/utils/rate-limiter";
 import { MetricsCollector } from "../../../shared/utils/metrics";
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const logger = new Logger("StreamIngestion");
 
@@ -403,7 +406,16 @@ async function startServer() {
 
     // Load protobuf definition
     const packageDefinition = protoLoader.loadSync(
-      path.join(__dirname, "../../../shared/proto/analytics.proto")
+      path.join(__dirname, "../../../shared/proto/analytics.proto"),
+      {
+        keepCase: true, // keep snake_case field names from proto
+        longs: String, // int64 as string
+        enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
+        defaults: true, // populate default values
+        arrays: true, // ensure empty repeated fields are []
+        objects: true, // ensure empty nested messages are {}
+        oneofs: true, // populate oneof helper
+      }
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 

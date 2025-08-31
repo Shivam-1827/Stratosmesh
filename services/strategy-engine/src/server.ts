@@ -12,6 +12,9 @@ import {
   StrategyPlugin, WorkerMessage,
 } from "../../../shared/types";
 
+import dotenv from 'dotenv';
+
+dotenv.config();
 const logger = new Logger("StrategyEngine");
 
 class StrategyEngineService {

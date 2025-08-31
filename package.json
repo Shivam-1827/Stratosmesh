@@ -1,7 +1,7 @@
 {
   "name": "stratosmesh",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
     "start": "echo 'Container is running'",
     "dev": "ts-node-dev --respawn --transpile-only",
@@ -10,9 +10,8 @@
     "dev:strategy-engine": "ts-node-dev --respawn services/strategy-engine/src/server.ts",
     "dev:stream-ingestion": "ts-node-dev --respawn services/stream-ingestion/src/server.ts",
     "dev:notification": "ts-node-dev --respawn services/notification/src/server.ts",
-    "dev:gateway": "ts-node-dev --respawn services/gateway/src/index.ts",
+    "dev:gateway": "ts-node-dev --respawn services/gateway/src/server.ts",
     "dev:llm-processor": "ts-node-dev --respawn services/llm-processor/src/server.ts"
-
   },
   "keywords": [],
   "author": "",
@@ -60,6 +59,8 @@
     "socket.io": "^4.8.1",
     "uui": "^1.0.7",
     "uuid": "^11.1.0",
+    "winston": "^3.17.0",
+    "winston-daily-rotate-file": "^5.0.0",
     "xlsx": "^0.18.5"
   }
 }

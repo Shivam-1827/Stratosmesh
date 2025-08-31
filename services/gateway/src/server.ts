@@ -1,3 +1,4 @@
+// services/gateway/src/server.ts
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -7,7 +8,6 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import multer from "multer";
 import path from "path";
-import { createProxyMiddleware } from "http-proxy-middleware";
 import { authMiddleware } from "../../../shared/middleware/auth";
 import { Logger } from "../../../shared/utils/logger";
 
@@ -16,7 +16,7 @@ dotenv.config();
 const app = express();
 const logger = new Logger("Gateway");
 
-// Security middleware
+// Security middleware (from your old code)
 app.use(helmet());
 app.use(cors());
 
@@ -26,39 +26,103 @@ const limiter = rateLimit({
   message: "Too many requests from this IP",
 });
 app.use(limiter);
-
 app.use(express.json({ limit: "10mb" }));
 
+// Health check
 app.get("/health", (req, res) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
 class UniversalGateway {
+  private clients: any = {};
   private llmClient: any;
   private streamClient: any;
 
   constructor() {
     this.setupGrpcClients();
     this.setupUniversalRoute();
+    this.setupHttpGrpcBridgeRoutes();
   }
 
   private setupGrpcClients() {
     const packageDefinition = protoLoader.loadSync(
-      path.join(__dirname, "../../../shared/proto/analytics.proto")
+      path.join(__dirname, "../../../shared/proto/analytics.proto"),
+      {
+        keepCase: true, // keep snake_case field names from proto
+        longs: String, // int64 as string
+        enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
+        defaults: true, // populate default values
+        arrays: true, // ensure empty repeated fields are []
+        objects: true, // ensure empty nested messages are {}
+        oneofs: true, // populate oneof helper
+      }
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
-    // LLM Processor client
+    // gRPC clients for HTTP-gRPC bridge
+    this.clients.tenant = new proto.stratosmesh.analytics.TenantService(
+      "tenant-manager:50054",
+      grpc.credentials.createInsecure()
+    );
+
+    this.clients.auth = new proto.stratosmesh.analytics.AuthService(
+      "auth-service:50051",
+      grpc.credentials.createInsecure()
+    );
+
+    this.clients.stream = new proto.stratosmesh.analytics.EnhancedStreamService(
+      "stream-ingestion:50052",
+      grpc.credentials.createInsecure()
+    );
+
+    // LLM and Stream clients for universal data processing
     this.llmClient = new proto.stratosmesh.analytics.LLMProcessorService(
       "llm-processor:50056",
       grpc.credentials.createInsecure()
     );
 
-    // Enhanced Stream client
     this.streamClient = new proto.stratosmesh.analytics.EnhancedStreamService(
       "stream-ingestion:50052",
       grpc.credentials.createInsecure()
     );
+
+    logger.info("All gRPC clients initialized");
+  }
+
+  private setupHttpGrpcBridgeRoutes() {
+    // Tenant routes - PUBLIC (no auth needed for creation)
+    app.post("/api/tenant/create", this.bridgeCall("tenant", "createTenant"));
+
+    // Tenant routes - PROTECTED (need authentication)
+    app.get(
+      "/api/tenant/:tenant_id/config",
+      authMiddleware,
+      this.bridgeCall("tenant", "getTenantConfig")
+    );
+    app.put(
+      "/api/tenant/:tenant_id/limits",
+      authMiddleware,
+      this.bridgeCall("tenant", "updateTenantLimits")
+    );
+
+    // Auth routes - PUBLIC (obviously no auth needed for login)
+    app.post("/api/auth/login", this.bridgeCall("auth", "authenticate"));
+    app.post("/api/auth/validate", this.bridgeCall("auth", "validateToken"));
+    app.post("/api/auth/refresh", this.bridgeCall("auth", "refreshToken"));
+
+    // Stream routes - PROTECTED (need authentication)
+    app.post(
+      "/api/stream/llm",
+      authMiddleware,
+      this.bridgeCall("stream", "processLLMData")
+    );
+    app.get(
+      "/api/stream/:tenant_id/metrics",
+      authMiddleware,
+      this.bridgeCall("stream", "getTenantMetrics")
+    );
+
+    logger.info("HTTP-gRPC bridge routes setup complete");
   }
 
   private setupUniversalRoute() {
@@ -67,13 +131,107 @@ class UniversalGateway {
       limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
     });
 
-    // Single universal endpoint for all data types
+    // Universal data processing endpoint - PROTECTED
     app.post(
       "/api/data/universal",
       authMiddleware,
       upload.single("file"),
       this.handleUniversalData.bind(this)
     );
+  }
+
+  private bridgeCall(service: string, method: string) {
+    return async (req: express.Request, res: express.Response) => {
+      try {
+        // Prepare request data
+        let requestData = { ...req.body };
+
+        // Add path parameters to request
+        if (req.params.tenant_id) {
+          requestData.tenant_id = req.params.tenant_id;
+        }
+
+        // Add tenant ID from auth middleware if available
+        if ((req as any).tenantId && !requestData.tenant_id) {
+          requestData.tenant_id = (req as any).tenantId;
+        }
+
+        logger.info(`Bridging ${service}.${method}`, {
+          requestData: { ...requestData, client_secret: "[REDACTED]" },
+        });
+
+        const result = await new Promise((resolve, reject) => {
+          this.clients[service][method](
+            requestData,
+            (error: any, response: any) => {
+              if (error) {
+                logger.error(`gRPC call failed: ${service}.${method}`, {
+                  code: error.code,
+                  message: error.message,
+                  details: error.details,
+                });
+                reject(error);
+              } else {
+                // 🔍 ADD THIS DEBUG LOG
+                logger.info(`gRPC raw response for ${service}.${method}:`, {
+                  response: JSON.stringify(response, null, 2),
+                });
+
+                logger.info(`gRPC call succeeded: ${service}.${method}`);
+                resolve(response);
+              }
+            }
+          );
+        });
+
+        // 🔍 ADD THIS DEBUG LOG TOO
+        logger.info(`Processed result for ${service}.${method}:`, {
+          result: JSON.stringify(result, null, 2),
+        });
+
+        res.json({
+          success: true,
+          data: result,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error: any) {
+        logger.error(`Bridge error: ${service}.${method}`, error);
+
+        // Map gRPC errors to appropriate HTTP status codes
+        let statusCode = 500;
+        let errorMessage = error.message;
+
+        if (error.code) {
+          switch (error.code) {
+            case grpc.status.NOT_FOUND:
+              statusCode = 404;
+              break;
+            case grpc.status.ALREADY_EXISTS:
+              statusCode = 409;
+              break;
+            case grpc.status.PERMISSION_DENIED:
+              statusCode = 403;
+              break;
+            case grpc.status.UNAUTHENTICATED:
+              statusCode = 401;
+              break;
+            case grpc.status.INVALID_ARGUMENT:
+              statusCode = 400;
+              break;
+            default:
+              statusCode = 500;
+          }
+        }
+
+        res.status(statusCode).json({
+          success: false,
+          error: errorMessage,
+          service,
+          method,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    };
   }
 
   async handleUniversalData(req: any, res: any) {
@@ -190,68 +348,16 @@ class UniversalGateway {
 // Initialize universal gateway
 const universalGateway = new UniversalGateway();
 
-// Legacy service proxies (keep for backward compatibility if needed)
-type ServiceConfig = {
-  target: string;
-  pathRewrite: Record<string, string>;
-  middleware?: Array<
-    (
-      req: express.Request,
-      res: express.Response,
-      next: express.NextFunction
-    ) => void
-  >;
-};
-
-const services: Record<string, ServiceConfig> = {
-  "/api/auth": {
-    target: "http://auth-service:50051",
-    pathRewrite: { "^/api/auth": "" },
-  },
-  "/api/tenant": {
-    target: "http://tenant-manager:50054",
-    pathRewrite: { "^/api/tenant": "" },
-    middleware: [authMiddleware],
-  },
-  "/api/strategy": {
-    target: "http://strategy-engine:50053",
-    pathRewrite: { "^/api/strategy": "" },
-    middleware: [authMiddleware],
-  },
-  "/api/notifications": {
-    target: "http://notification:50055",
-    pathRewrite: { "^/api/notifications": "" },
-    middleware: [authMiddleware],
-  },
-};
-
-// Setup service proxies
-Object.entries(services).forEach(([path, config]) => {
-  if (config.middleware) {
-    app.use(path, ...config.middleware);
-  }
-
-  app.use(
-    path,
-    createProxyMiddleware({
-      target: config.target,
-      changeOrigin: true,
-      pathRewrite: config.pathRewrite,
-      // @ts-expect-error onError is missing from type defs
-      onError: (err, req, res) => {
-        logger.error(`Proxy error for ${path}:`, err);
-        if (!res.headersSent) {
-          res.status(502).json({ error: "Service unavailable" });
-        }
-      },
-    })
-  );
-
-});
-
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  logger.info(`Universal Gateway is running on port ${PORT}`);
-  logger.info("Universal data endpoint: POST /api/data/universal");
+  logger.info(
+    `Universal Gateway with HTTP-gRPC Bridge running on port ${PORT}`
+  );
+  logger.info("Available endpoints:");
+  logger.info("  POST /api/tenant/create (public)");
+  logger.info("  POST /api/auth/login (public)");
+  logger.info("  POST /api/data/universal (authenticated)");
+  logger.info("  GET  /api/tenant/:id/config (authenticated)");
+  logger.info("  GET  /health (public)");
 });

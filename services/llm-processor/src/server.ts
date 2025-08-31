@@ -4,7 +4,9 @@ import * as protoLoader from "@grpc/proto-loader";
 import path from "path";
 import { LLMDataProcessor, UniversalInput } from "./processor";
 import { Logger } from "../../../shared/utils/logger";
+import dotenv from 'dotenv';
 
+dotenv.config();
 const logger = new Logger("LLMProcessor");
 
 class LLMProcessorServiceImpl {
@@ -144,7 +146,16 @@ class LLMProcessorServiceImpl {
 async function startServer() {
   try {
     const packageDefinition = protoLoader.loadSync(
-      path.join(__dirname, "../../../shared/proto/analytics.proto")
+      path.join(__dirname, "../../../shared/proto/analytics.proto"),
+      {
+        keepCase: true, // keep snake_case field names from proto
+        longs: String, // int64 as string
+        enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
+        defaults: true, // populate default values
+        arrays: true, // ensure empty repeated fields are []
+        objects: true, // ensure empty nested messages are {}
+        oneofs: true, // populate oneof helper
+      }
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 

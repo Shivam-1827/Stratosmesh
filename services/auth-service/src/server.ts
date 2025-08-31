@@ -235,7 +235,16 @@ async function startServer() {
   const db = client.db("stratosmesh");
 
   const packageDefinition = protoLoader.loadSync(
-    path.join(__dirname, "../../../shared/proto/analytics.proto")
+    path.join(__dirname, "../../../shared/proto/analytics.proto"),
+    {
+      keepCase: true, // keep snake_case field names from proto
+      longs: String, // int64 as string
+      enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
+      defaults: true, // populate default values
+      arrays: true, // ensure empty repeated fields are []
+      objects: true, // ensure empty nested messages are {}
+      oneofs: true, // populate oneof helper
+    }
   );
   const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
@@ -260,7 +269,7 @@ async function startServer() {
         return;
       }
       logger.info(`Auth service running on port ${port}`);
-      server.start();
+      
     }
   );
 }

@@ -5,7 +5,9 @@ import * as XLSX from "xlsx";
 import csv from "csv-parser";
 import axios from "axios";
 import { Readable } from "stream";
+import dotenv from 'dotenv';
 
+dotenv.config();
 export interface UniversalInput {
   type: "file" | "text" | "url" | "structured";
   content: any;
@@ -26,7 +28,7 @@ export class LLMDataProcessor {
 
   constructor() {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-    this.geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
+    this.geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
   }
 
   async processData(input: {

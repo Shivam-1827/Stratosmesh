@@ -6,7 +6,9 @@ import amqp from "amqplib";
 import type { Channel, ChannelModel } from "amqplib";
 import jwt from "jsonwebtoken";
 import { Logger } from "../../../shared/utils/logger";
+import dotenv from 'dotenv';
 
+dotenv.config();
 const logger = new Logger("NotificationService");
 
 class NotificationService {

@@ -1,4 +1,4 @@
-// services/tenant-manager/src/server.ts
+
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
@@ -6,7 +6,9 @@ import bcrypt from "bcrypt";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { Logger } from "../../../shared/utils/logger";
+import dotenv from 'dotenv';
 
+dotenv.config();
 const logger = new Logger("TenantManager");
 
 class TenantServiceImpl {
@@ -44,17 +46,20 @@ class TenantServiceImpl {
       const clientSecret = uuidv4();
       const hashedSecret = await bcrypt.hash(clientSecret, 10);
 
+      // ✅ Process request limits properly
+      const processedLimits = {
+        maxConcurrentStreams: limits?.max_concurrent_streams || 10,
+        maxStrategiesPerHour: limits?.max_strategies_per_hour || 100,
+        maxStorageMb: limits?.max_storage_mb || 1000,
+        rateLimitPerMinute: limits?.rate_limit_per_minute || 60,
+      };
+
       const tenant = {
         tenantId,
         name,
         email,
         status: "ACTIVE",
-        limits: {
-          maxConcurrentStreams: limits?.max_concurrent_streams || 10,
-          maxStrategiesPerHour: limits?.max_strategies_per_hour || 100,
-          maxStorageMb: limits?.max_storage_mb || 1000,
-          rateLimitPerMinute: limits?.rate_limit_per_minute || 60,
-        },
+        limits: processedLimits,
         credentials: {
           clientId,
           clientSecret: hashedSecret,
@@ -70,14 +75,12 @@ class TenantServiceImpl {
           moving_average: { period: 20 },
           anomaly_detection: { threshold: 2 },
           arima_prediction: {
-            // New ARIMA config
             p: 2,
             d: 1,
             q: 2,
             steps: 5,
           },
           hybrid_arima_ma: {
-            // Hybrid config
             arimaConfig: { p: 2, d: 1, q: 2, steps: 3 },
             maConfig: { period: 20 },
           },
@@ -87,21 +90,35 @@ class TenantServiceImpl {
       };
 
       await this.db.collection("tenants").insertOne(tenant);
-
-      // Create tenant-specific collections
       await this.createTenantCollections(tenantId);
 
-      callback(null, {
-        tenant_id: tenantId,
-        name,
-        status: "ACTIVE",
-        limits: tenant.limits,
-        created_at: { seconds: Math.floor(Date.now() / 1000) },
-        client_credentials: {
-          client_id: clientId,
-          client_secret: clientSecret, // Return unhashed secret only once
+      // 🔥 CRITICAL FIX: Proper protobuf field mapping
+      const response = {
+        tenant_id: String(tenantId),
+        name: String(name),
+        status: "ACTIVE", // String, not enum
+        limits: {
+          max_concurrent_streams: Number(processedLimits.maxConcurrentStreams),
+          max_strategies_per_hour: Number(processedLimits.maxStrategiesPerHour),
+          max_storage_mb: Number(processedLimits.maxStorageMb),
+          rate_limit_per_minute: Number(processedLimits.rateLimitPerMinute),
         },
-      });
+        created_at: {
+          seconds: Number(Math.floor(Date.now() / 1000)),
+        },
+        client_credentials: {
+          client_id: String(clientId),
+          client_secret: String(clientSecret),
+        },
+      };
+
+      // 🔍 Debug logging
+      logger.info(
+        "Tenant creation response:",
+        JSON.stringify(response, null, 2)
+      );
+
+      callback(null, response);
     } catch (error) {
       logger.error("Create tenant error:", error);
       callback(error);
@@ -112,7 +129,7 @@ class TenantServiceImpl {
     try {
       const { tenant_id } = call.request;
 
-      if(!tenant_id){
+      if (!tenant_id) {
         return callback(new Error("Missing tenant Id"));
       }
 
@@ -222,8 +239,17 @@ async function startServer() {
   const db = client.db("stratosmesh");
 
   const packageDefinition = protoLoader.loadSync(
-      path.join(__dirname, "../../../shared/proto/analytics.proto")
-    );;
+    path.join(__dirname, "../../../shared/proto/analytics.proto"),
+    {
+      keepCase: true, // keep snake_case field names from proto
+      longs: String, // int64 as string
+      enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
+      defaults: true, // populate default values
+      arrays: true, // ensure empty repeated fields are []
+      objects: true, // ensure empty nested messages are {}
+      oneofs: true, // populate oneof helper
+    }
+  );;
   const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
   const server = new grpc.Server();
@@ -246,7 +272,7 @@ async function startServer() {
         return;
       }
       logger.info(`Tenant manager service running on port ${port}`);
-      server.start();
+      
     }
   );
 }
