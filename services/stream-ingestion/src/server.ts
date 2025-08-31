@@ -325,23 +325,38 @@ class UniversalDataStreamServiceImpl {
   }
 
   private async getTenantContext(tenantId: string): Promise<TenantContext> {
-    const tenant = await this.db.collection("tenants").findOne({
-      tenantId,
-      status: "ACTIVE",
-    });
+    try {
+      logger.info(`Looking up tenant: ${tenantId}`);
 
-    if (!tenant) {
-      throw new Error("Tenant not found or inactive");
+      const tenant = await this.db.collection("tenants").findOne({
+        tenantId,
+        status: "ACTIVE",
+      });
+
+      logger.info(`Tenant lookup result:`, tenant ? "Found" : "Not found");
+
+      if (!tenant) {
+        // ✅ FIX: More detailed error for debugging
+        const allTenants = await this.db
+          .collection("tenants")
+          .find({})
+          .project({ tenantId: 1, status: 1 })
+          .toArray();
+        logger.error("Available tenants:", allTenants);
+        throw new Error(`Tenant not found or inactive: ${tenantId}`);
+      }
+
+      return {
+        tenantId: tenant.tenantId,
+        limits: tenant.limits,
+        permissions: tenant.permissions || [],
+        metadata: tenant.metadata || {},
+      };
+    } catch (error) {
+      logger.error("Tenant context lookup error:", error);
+      throw error;
     }
-
-    return {
-      tenantId: tenant.tenantId,
-      limits: tenant.limits,
-      permissions: tenant.permissions || [],
-      metadata: tenant.metadata || {},
-    };
   }
-
   private async storeStreamData(data: StreamData) {
     try {
       await this.db.collection("stream_data").insertOne({

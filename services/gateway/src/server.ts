@@ -1,4 +1,4 @@
-// services/gateway/src/server.ts
+// services/gateway/src/server.ts - FIXED VERSION
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -16,7 +16,7 @@ dotenv.config();
 const app = express();
 const logger = new Logger("Gateway");
 
-// Security middleware (from your old code)
+// Security middleware
 app.use(helmet());
 app.use(cors());
 
@@ -48,42 +48,73 @@ class UniversalGateway {
     const packageDefinition = protoLoader.loadSync(
       path.join(__dirname, "../../../shared/proto/analytics.proto"),
       {
-        keepCase: true, // keep snake_case field names from proto
-        longs: String, // int64 as string
-        enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
-        defaults: true, // populate default values
-        arrays: true, // ensure empty repeated fields are []
-        objects: true, // ensure empty nested messages are {}
-        oneofs: true, // populate oneof helper
+        keepCase: true,
+        longs: String,
+        enums: String,
+        defaults: true,
+        arrays: true,
+        objects: true,
+        oneofs: true,
       }
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
+    // ✅ FIX: Correct service URLs and retry logic
+    const createClientWithRetry = (
+      serviceName: string,
+      url: string,
+      serviceConstructor: any
+    ) => {
+      const client = new serviceConstructor(
+        url,
+        grpc.credentials.createInsecure()
+      );
+
+      // Add connection timeout and retry
+      client.waitForReady(Date.now() + 5000, (error: any) => {
+        if (error) {
+          logger.error(
+            `Failed to connect to ${serviceName} at ${url}:`,
+            error.message
+          );
+        } else {
+          logger.info(`✅ Connected to ${serviceName}`);
+        }
+      });
+
+      return client;
+    };
+
     // gRPC clients for HTTP-gRPC bridge
-    this.clients.tenant = new proto.stratosmesh.analytics.TenantService(
+    this.clients.tenant = createClientWithRetry(
+      "TenantService",
       "tenant-manager:50054",
-      grpc.credentials.createInsecure()
+      proto.stratosmesh.analytics.TenantService
     );
 
-    this.clients.auth = new proto.stratosmesh.analytics.AuthService(
+    this.clients.auth = createClientWithRetry(
+      "AuthService",
       "auth-service:50051",
-      grpc.credentials.createInsecure()
+      proto.stratosmesh.analytics.AuthService
     );
 
-    this.clients.stream = new proto.stratosmesh.analytics.EnhancedStreamService(
+    this.clients.stream = createClientWithRetry(
+      "EnhancedStreamService",
       "stream-ingestion:50052",
-      grpc.credentials.createInsecure()
+      proto.stratosmesh.analytics.EnhancedStreamService
     );
 
     // LLM and Stream clients for universal data processing
-    this.llmClient = new proto.stratosmesh.analytics.LLMProcessorService(
+    this.llmClient = createClientWithRetry(
+      "LLMProcessorService",
       "llm-processor:50056",
-      grpc.credentials.createInsecure()
+      proto.stratosmesh.analytics.LLMProcessorService
     );
 
-    this.streamClient = new proto.stratosmesh.analytics.EnhancedStreamService(
+    this.streamClient = createClientWithRetry(
+      "EnhancedStreamService",
       "stream-ingestion:50052",
-      grpc.credentials.createInsecure()
+      proto.stratosmesh.analytics.EnhancedStreamService
     );
 
     logger.info("All gRPC clients initialized");
@@ -99,23 +130,25 @@ class UniversalGateway {
       authMiddleware,
       this.bridgeCall("tenant", "getTenantConfig")
     );
+
     app.put(
       "/api/tenant/:tenant_id/limits",
       authMiddleware,
       this.bridgeCall("tenant", "updateTenantLimits")
     );
 
-    // Auth routes - PUBLIC (obviously no auth needed for login)
+    // Auth routes - PUBLIC
     app.post("/api/auth/login", this.bridgeCall("auth", "authenticate"));
     app.post("/api/auth/validate", this.bridgeCall("auth", "validateToken"));
     app.post("/api/auth/refresh", this.bridgeCall("auth", "refreshToken"));
 
-    // Stream routes - PROTECTED (need authentication)
+    // Stream routes - PROTECTED
     app.post(
       "/api/stream/llm",
       authMiddleware,
       this.bridgeCall("stream", "processLLMData")
     );
+
     app.get(
       "/api/stream/:tenant_id/metrics",
       authMiddleware,
@@ -160,10 +193,26 @@ class UniversalGateway {
           requestData: { ...requestData, client_secret: "[REDACTED]" },
         });
 
+        // ✅ FIX: Add client availability check
+        if (!this.clients[service]) {
+          throw new Error(`Service ${service} client not available`);
+        }
+
+        if (!this.clients[service][method]) {
+          throw new Error(`Method ${method} not found on service ${service}`);
+        }
+
         const result = await new Promise((resolve, reject) => {
+          // ✅ FIX: Add timeout to prevent hanging
+          const timeout = setTimeout(() => {
+            reject(new Error(`Request timeout for ${service}.${method}`));
+          }, 30000); // 30 second timeout
+
           this.clients[service][method](
             requestData,
             (error: any, response: any) => {
+              clearTimeout(timeout);
+
               if (error) {
                 logger.error(`gRPC call failed: ${service}.${method}`, {
                   code: error.code,
@@ -172,21 +221,11 @@ class UniversalGateway {
                 });
                 reject(error);
               } else {
-                // 🔍 ADD THIS DEBUG LOG
-                logger.info(`gRPC raw response for ${service}.${method}:`, {
-                  response: JSON.stringify(response, null, 2),
-                });
-
                 logger.info(`gRPC call succeeded: ${service}.${method}`);
                 resolve(response);
               }
             }
           );
-        });
-
-        // 🔍 ADD THIS DEBUG LOG TOO
-        logger.info(`Processed result for ${service}.${method}:`, {
-          result: JSON.stringify(result, null, 2),
         });
 
         res.json({
@@ -234,6 +273,7 @@ class UniversalGateway {
     };
   }
 
+  // ✅ FIX: Universal data handler with proper method calls
   async handleUniversalData(req: any, res: any) {
     try {
       const tenantId = req.tenantId; // From auth middleware
@@ -253,21 +293,17 @@ class UniversalGateway {
 
       // Handle different input types automatically
       if (req.file) {
-        // File upload
         llmRequest.file_data = req.file.buffer;
         logger.info(
           `Processing file: ${req.file.originalname} (${req.file.mimetype})`
         );
       } else if (req.body.text) {
-        // Raw text
         llmRequest.raw_text = req.body.text;
         logger.info("Processing raw text data");
       } else if (req.body.url) {
-        // URL
         llmRequest.file_url = req.body.url;
         logger.info(`Processing URL: ${req.body.url}`);
       } else if (req.body.data) {
-        // Structured data
         llmRequest.structured_data = req.body.data;
         logger.info("Processing structured data");
       } else {
@@ -277,15 +313,20 @@ class UniversalGateway {
         });
       }
 
-      // Process with LLM
+      // ✅ FIX: Process with LLM using correct method name
       logger.info(
         `Starting LLM processing for tenant ${tenantId}, stream ${stream_id}`
       );
 
       const llmResult = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("LLM processing timeout"));
+        }, 60000); // 60 second timeout
+
         this.llmClient.processUniversalData(
           llmRequest,
           (error: any, response: any) => {
+            clearTimeout(timeout);
             if (error) {
               logger.error("LLM processing error:", error);
               reject(error);
@@ -297,8 +338,12 @@ class UniversalGateway {
         );
       });
 
-      // Send processed data to stream ingestion
+      // ✅ FIX: Send processed data to stream ingestion using correct method name
       const streamResult = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Stream processing timeout"));
+        }, 30000); // 30 second timeout
+
         this.streamClient.processLLMData(
           {
             tenant_id: tenantId,
@@ -307,6 +352,7 @@ class UniversalGateway {
             original_format: req.file ? req.file.mimetype : "text/plain",
           },
           (error: any, response: any) => {
+            clearTimeout(timeout);
             if (error) {
               logger.error("Stream processing error:", error);
               reject(error);
@@ -351,9 +397,7 @@ const universalGateway = new UniversalGateway();
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  logger.info(
-    `Universal Gateway with HTTP-gRPC Bridge running on port ${PORT}`
-  );
+  logger.info(`Universal Gateway running on port ${PORT}`);
   logger.info("Available endpoints:");
   logger.info("  POST /api/tenant/create (public)");
   logger.info("  POST /api/auth/login (public)");

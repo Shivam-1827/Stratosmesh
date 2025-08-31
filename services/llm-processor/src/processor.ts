@@ -6,6 +6,9 @@ import csv from "csv-parser";
 import axios from "axios";
 import { Readable } from "stream";
 import dotenv from 'dotenv';
+import {Logger} from "../../../shared/utils/logger"
+
+const logger = new Logger("llm-processor");
 
 dotenv.config();
 export interface UniversalInput {
@@ -182,7 +185,8 @@ export class LLMDataProcessor {
     desiredFormat: string
   ): Promise<any> {
     const prompt = `
-Analyze the following data and provide a JSON response with this exact structure:
+Analyze the following data and provide a JSON response with this exact structure.
+IMPORTANT: Respond ONLY with valid JSON, no markdown formatting or backticks.
 
 {
   "dataType": "string (e.g., 'financial_data', 'sensor_data', 'sales_data', 'log_data', etc.)",
@@ -208,26 +212,54 @@ Analyze this data and determine:
 3. Which fields contain numerical values suitable for analysis
 4. Which fields represent time/dates
 5. Best method to parse this data format
+
+Respond with ONLY the JSON object, no additional text or formatting.
 `;
 
     try {
       const result = await this.geminiModel.generateContent(prompt);
       const response = await result.response;
-      const text = response.text();
+      const text = response.text().trim();
 
-      // Extract JSON from response
-      const jsonMatch = text.match(/``````/) || text.match(/\{[\s\S]*\}/);
+      logger.info("Raw Gemini response:", text);
+
+      // ✅ FIX: Better JSON extraction
+      let jsonText = text;
+
+      // Remove markdown formatting if present
+      if (text.includes("```json")) {
+        const match = text.match(/```json\s*([\s\S]*?)\s*```/);
+        if (match) {
+          jsonText = match[1].trim();
+        }
+      } else if (text.includes("```")) {
+        const match = text.match(/```\s*([\s\S]*?)\s*```/);
+        if (match) {
+          jsonText = match[1].trim();
+        }
+      }
+
+      // Find JSON object in text
+      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+        jsonText = jsonMatch[0];
+      }
+
+      logger.info("Extracted JSON text:", jsonText);
+
+      try {
+        const parsed = JSON.parse(jsonText);
         return {
           ...parsed,
-          confidence: Math.min(Math.max(parsed.confidence || 0.5, 0.1), 1.0), // Clamp between 0.1 and 1.0
+          confidence: Math.min(Math.max(parsed.confidence || 0.5, 0.1), 1.0),
         };
-      } else {
-        throw new Error("Could not parse Gemini response as JSON");
+      } catch (parseError) {
+        logger.error("JSON parsing failed:", parseError);
+        logger.error("Failed JSON text:", jsonText);
+        throw new Error(`JSON parsing failed: ${parseError}`);
       }
     } catch (error) {
-      console.error("Gemini analysis error:", error);
+      logger.error("Gemini analysis error:", error);
       return this.fallbackAnalysis(content, description);
     }
   }
@@ -384,15 +416,31 @@ Analyze this data and determine:
   }
 
   private fallbackAnalysis(content: string, description: string): any {
+    logger.info("Using fallback analysis");
+
+    // Try to detect data type from content
+    let dataType = "generic_data";
+    let extractionMethod = "structured_text";
+
+    if (content.includes(",") && content.includes("\n")) {
+      dataType = "tabular_data";
+      extractionMethod = "csv";
+    } else if (content.includes("{") && content.includes("}")) {
+      dataType = "json_data";
+      extractionMethod = "json";
+    } else if (content.match(/\d{4}-\d{2}-\d{2}/)) {
+      dataType = "time_series_data";
+    }
+
     return {
-      dataType: "generic_data",
+      dataType,
       confidence: 0.5,
       schema: {
         timestampField: null,
         valueFields: ["value"],
         categoryFields: [],
       },
-      extractionMethod: "structured_text",
+      extractionMethod,
       suggestedAnalytics: ["moving_average", "anomaly_detection"],
     };
   }
