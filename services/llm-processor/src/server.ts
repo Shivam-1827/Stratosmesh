@@ -168,7 +168,7 @@ async function startServer() {
       analyzeDataFormat: llmServiceImpl.analyzeDataFormat.bind(llmServiceImpl),
     });
 
-    const port = process.env.PORT || "50056";
+    const port = process.env.LLM_PROCESSOR_PORT || "50056";
     server.bindAsync(
       `0.0.0.0:${port}`,
       grpc.ServerCredentials.createInsecure(),

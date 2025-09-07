@@ -461,7 +461,7 @@ async function startServer() {
       }
     );
 
-    const port = process.env.PORT || "50052";
+    const port = process.env.STREAM_INGESTION_PORT || "50052";
     server.bindAsync(
       `0.0.0.0:${port}`,
       grpc.ServerCredentials.createInsecure(),

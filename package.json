@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "echo 'Container is running'",
-    "dev": "ts-node-dev --respawn --transpile-only",
+    "dev": "concurrently \"npm run dev:auth-service\" \"npm run dev:tenant-manager\" \"npm run dev:strategy-engine\" \"npm run dev:stream-ingestion\" \"npm run dev:notification\" \"npm run dev:gateway\" \"npm run dev:llm-processor\"",
     "dev:auth-service": "ts-node-dev --respawn services/auth-service/src/server.ts",
     "dev:tenant-manager": "ts-node-dev --respawn services/tenant-manager/src/server.ts",
     "dev:strategy-engine": "ts-node-dev --respawn services/strategy-engine/src/server.ts",
@@ -27,6 +27,7 @@
     "@types/node": "^24.3.0",
     "@types/pdf-parse": "^1.1.5",
     "amqplib": "^0.10.8",
+    "concurrently": "^9.2.1",
     "cors": "^2.8.5",
     "express-rate-limit": "^8.0.1",
     "helmet": "^8.1.0",

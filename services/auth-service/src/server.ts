@@ -259,7 +259,7 @@ async function startServer() {
     }
   );
 
-  const port = process.env.PORT || "50051";
+  const port = process.env.AUTH_SERVICE_PORT || "50051";
   server.bindAsync(
     `0.0.0.0:${port}`,
     grpc.ServerCredentials.createInsecure(),

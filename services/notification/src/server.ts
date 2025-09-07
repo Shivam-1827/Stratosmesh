@@ -201,4 +201,4 @@ class NotificationService {
 }
 
 const notificationService = new NotificationService();
-notificationService.start(parseInt(process.env.PORT || "50055"));
+notificationService.start(parseInt(process.env.NOTIFICATION_PORT || "50055"));

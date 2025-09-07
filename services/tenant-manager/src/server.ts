@@ -262,7 +262,7 @@ async function startServer() {
       tenantServiceImpl.updateTenantLimits.bind(tenantServiceImpl),
   });
 
-  const port = process.env.PORT || "50054";
+  const port = process.env.TENANT_MANAGER_PORT || "50054";
   server.bindAsync(
     `0.0.0.0:${port}`,
     grpc.ServerCredentials.createInsecure(),

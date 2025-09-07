@@ -53,8 +53,8 @@ services:
       - NODE_ENV=development
       - PORT=50051
       - MONGODB_URI=mongodb://admin:password@mongodb:27017/stratosmesh?authSource=admin
-      - JWT_SECRET=5e6025eaa2bdbe6cbd0567496e362a36
-      - JWT_REFRESH_SECRET=19eb1d9be04e3ff00b503e34bb2b53ae
+      - JWT_SECRET=5e8f894aa9a8cdf107d46b2b79801a43
+      - JWT_REFRESH_SECRET=e3417a9a2073ccad30dcd39a97387abf
     volumes:
       - ./services/auth-service/src:/app/services/auth-service/src:ro
       - ./shared:/app/shared:ro
@@ -148,7 +148,7 @@ services:
       - NODE_ENV=development
       - PORT=50052
       - MONGODB_URI=mongodb://admin:password@mongodb:27017/stratosmesh?authSource=admin
-      - RABBITMQ_URI=amqp://admin:password@rabbitmq:5672
+      - RABBITMQ_URI=amqp://admin:admin@rabbitmq:5672
       - REDIS_URI=redis://redis:6379
       - LLM_PROCESSOR_URI=llm-processor:50056  # NEW: LLM processor connection
     volumes:
@@ -226,7 +226,7 @@ services:
       - NODE_ENV=development
       - PORT=50055
       - RABBITMQ_URI=amqp://admin:password@rabbitmq:5672
-      - JWT_SECRET=5e6025eaa2bdbe6cbd0567496e362a36
+      - JWT_SECRET=5e8f894aa9a8cdf107d46b2b79801a43
       - WEBSOCKET_MAX_CONNECTIONS=10000
       - REDIS_URI=redis://redis:6379  # For scaling WebSocket connections
     volumes:
@@ -352,3 +352,7 @@ volumes:
     driver: local
   grafana_data:
     driver: local
+
+
+
+# do change the mongodb url, jwt_secret , redis_url, username and password for all services 

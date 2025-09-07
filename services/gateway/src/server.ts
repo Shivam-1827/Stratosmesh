@@ -88,35 +88,41 @@ class UniversalGateway {
     // gRPC clients for HTTP-gRPC bridge
     this.clients.tenant = createClientWithRetry(
       "TenantService",
-      "tenant-manager:50054",
+      // "tenant-manager:50054",
+      "localhost:50054",
       proto.stratosmesh.analytics.TenantService
     );
 
     this.clients.auth = createClientWithRetry(
       "AuthService",
-      "auth-service:50051",
+      // "auth-service:50051",
+      "localhost:50051",
       proto.stratosmesh.analytics.AuthService
     );
 
     this.clients.stream = createClientWithRetry(
       "EnhancedStreamService",
-      "stream-ingestion:50052",
+      // "stream-ingestion:50052",
+      "localhost:50052",
       proto.stratosmesh.analytics.EnhancedStreamService
     );
 
     // LLM and Stream clients for universal data processing
     this.llmClient = createClientWithRetry(
       "LLMProcessorService",
-      "llm-processor:50056",
+      // "llm-processor:50056",
+      "localhost:50056",
       proto.stratosmesh.analytics.LLMProcessorService
     );
 
     this.streamClient = createClientWithRetry(
       "EnhancedStreamService",
-      "stream-ingestion:50052",
+      // "stream-ingestion:50052",
+      "localhost:50052",
       proto.stratosmesh.analytics.EnhancedStreamService
     );
 
+    
     logger.info("All gRPC clients initialized");
   }
 
