@@ -19,6 +19,14 @@ service LLMProcessorService {
   rpc AnalyzeDataFormat(DataFormatRequest) returns (DataFormatResponse);
 }
 
+// ADD THIS: Strategy Engine Service
+service StrategyEngineService {
+  rpc GetStrategyResult(StrategyResultRequest) returns (StrategyResultResponse);
+  rpc ListStrategies(ListStrategiesRequest) returns (ListStrategiesResponse);
+  rpc ValidateStrategy(ValidateStrategyRequest) returns (ValidateStrategyResponse);
+  rpc ExecuteStrategy(StrategyExecutionRequest) returns (StrategyExecutionResponse);
+}
+
 service AuthService {
   rpc Authenticate(AuthRequest) returns (AuthResponse);
   rpc ValidateToken(TokenValidationRequest) returns (TokenValidationResponse);
@@ -158,6 +166,67 @@ message StrategyResponse {
   ExecutionStatus status = 2;
   AnalysisResult result = 3;
   repeated string errors = 4;
+}
+
+// ADD THESE: Strategy Engine Messages
+message StrategyResultRequest {
+  string execution_id = 1;
+  string tenant_id = 2;
+}
+
+message StrategyResultResponse {
+  string execution_id = 1;
+  ExecutionStatus status = 2;
+  AnalysisResult result = 3;
+  repeated string errors = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp completed_at = 6;
+}
+
+message ListStrategiesRequest {
+  string tenant_id = 1;
+  bool include_disabled = 2;
+}
+
+message ListStrategiesResponse {
+  repeated StrategyInfo strategies = 1;
+}
+
+message StrategyInfo {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  string description = 4;
+  repeated string required_data_types = 5;
+  google.protobuf.Struct default_config = 6;
+  bool enabled = 7;
+}
+
+message ValidateStrategyRequest {
+  string tenant_id = 1;
+  string strategy_id = 2;
+  StrategyConfig config = 3;
+}
+
+message ValidateStrategyResponse {
+  bool valid = 1;
+  repeated string errors = 2;
+  repeated string warnings = 3;
+}
+
+message StrategyExecutionRequest {
+  string tenant_id = 1;
+  string strategy_id = 2;
+  StrategyConfig config = 3;
+  repeated google.protobuf.Struct data = 4;
+  map<string, string> options = 5;
+}
+
+message StrategyExecutionResponse {
+  string execution_id = 1;
+  ExecutionStatus status = 2;
+  string message = 3;
+  google.protobuf.Timestamp started_at = 4;
 }
 
 message StrategyConfig {

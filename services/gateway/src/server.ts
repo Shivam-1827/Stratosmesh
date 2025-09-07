@@ -37,6 +37,7 @@ class UniversalGateway {
   private clients: any = {};
   private llmClient: any;
   private streamClient: any;
+  private strategyClient: any; // ✅ FIX: Add strategy client
 
   constructor() {
     this.setupGrpcClients();
@@ -59,7 +60,30 @@ class UniversalGateway {
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
-    // ✅ FIX: Correct service URLs and retry logic
+    // ✅ FIX: Centralized service configuration
+    const serviceConfig = {
+      tenant: {
+        url: process.env.TENANT_SERVICE_URL || "localhost:50054",
+        constructor: proto.stratosmesh.analytics.TenantService
+      },
+      auth: {
+        url: process.env.AUTH_SERVICE_URL || "localhost:50051", 
+        constructor: proto.stratosmesh.analytics.AuthService
+      },
+      stream: {
+        url: process.env.STREAM_SERVICE_URL || "localhost:50052",
+        constructor: proto.stratosmesh.analytics.EnhancedStreamService
+      },
+      llm: {
+        url: process.env.LLM_SERVICE_URL || "localhost:50056",
+        constructor: proto.stratosmesh.analytics.LLMProcessorService
+      },
+      strategy: {
+        url: process.env.STRATEGY_SERVICE_URL || "localhost:50053",
+        constructor: proto.stratosmesh.analytics.StrategyEngineService
+      }
+    };
+
     const createClientWithRetry = (
       serviceName: string,
       url: string,
@@ -70,7 +94,6 @@ class UniversalGateway {
         grpc.credentials.createInsecure()
       );
 
-      // Add connection timeout and retry
       client.waitForReady(Date.now() + 5000, (error: any) => {
         if (error) {
           logger.error(
@@ -85,43 +108,19 @@ class UniversalGateway {
       return client;
     };
 
-    // gRPC clients for HTTP-gRPC bridge
-    this.clients.tenant = createClientWithRetry(
-      "TenantService",
-      // "tenant-manager:50054",
-      "localhost:50054",
-      proto.stratosmesh.analytics.TenantService
-    );
+    // ✅ FIX: Create all clients using configuration
+    Object.entries(serviceConfig).forEach(([serviceName, config]) => {
+      this.clients[serviceName] = createClientWithRetry(
+        serviceName,
+        config.url,
+        config.constructor
+      );
+    });
 
-    this.clients.auth = createClientWithRetry(
-      "AuthService",
-      // "auth-service:50051",
-      "localhost:50051",
-      proto.stratosmesh.analytics.AuthService
-    );
-
-    this.clients.stream = createClientWithRetry(
-      "EnhancedStreamService",
-      // "stream-ingestion:50052",
-      "localhost:50052",
-      proto.stratosmesh.analytics.EnhancedStreamService
-    );
-
-    // LLM and Stream clients for universal data processing
-    this.llmClient = createClientWithRetry(
-      "LLMProcessorService",
-      // "llm-processor:50056",
-      "localhost:50056",
-      proto.stratosmesh.analytics.LLMProcessorService
-    );
-
-    this.streamClient = createClientWithRetry(
-      "EnhancedStreamService",
-      // "stream-ingestion:50052",
-      "localhost:50052",
-      proto.stratosmesh.analytics.EnhancedStreamService
-    );
-
+    // ✅ FIX: Assign specific client references (remove duplication)
+    this.llmClient = this.clients.llm;
+    this.streamClient = this.clients.stream;
+    this.strategyClient = this.clients.strategy; // ✅ NEW: Strategy client reference
     
     logger.info("All gRPC clients initialized");
   }
@@ -161,6 +160,38 @@ class UniversalGateway {
       this.bridgeCall("stream", "getTenantMetrics")
     );
 
+    app.post(
+      "/api/stream/execute-strategy",
+      authMiddleware,
+      this.bridgeCall("stream", "executeStrategy")
+    );
+
+    // ✅ FIX: Add missing Strategy Engine routes
+    app.get(
+      "/api/strategy/:execution_id/result",
+      authMiddleware,
+      this.bridgeCall("strategy", "getStrategyResult")
+    );
+
+    app.post(
+      "/api/strategy/execute",
+      authMiddleware,
+      this.handleStrategyExecution.bind(this)
+    );
+
+    app.get(
+      "/api/strategy/available",
+      authMiddleware,
+      this.bridgeCall("strategy", "getAvailableStrategies")
+    );
+
+    // ✅ NEW: LLM Processing routes
+    app.post(
+      "/api/llm/analyze-format",
+      authMiddleware,
+      this.bridgeCall("llm", "analyzeDataFormat")
+    );
+
     logger.info("HTTP-gRPC bridge routes setup complete");
   }
 
@@ -190,6 +221,10 @@ class UniversalGateway {
           requestData.tenant_id = req.params.tenant_id;
         }
 
+        if (req.params.execution_id) {
+          requestData.execution_id = req.params.execution_id;
+        }
+
         // Add tenant ID from auth middleware if available
         if ((req as any).tenantId && !requestData.tenant_id) {
           requestData.tenant_id = (req as any).tenantId;
@@ -209,7 +244,6 @@ class UniversalGateway {
         }
 
         const result = await new Promise((resolve, reject) => {
-          // ✅ FIX: Add timeout to prevent hanging
           const timeout = setTimeout(() => {
             reject(new Error(`Request timeout for ${service}.${method}`));
           }, 30000); // 30 second timeout
@@ -277,6 +311,92 @@ class UniversalGateway {
         });
       }
     };
+  }
+
+  // ✅ NEW: Strategy execution handler
+  async handleStrategyExecution(req: any, res: any) {
+    try {
+      const tenantId = req.tenantId; // From auth middleware
+      const { strategy_id, config, use_historical_data = true } = req.body;
+
+      if (!strategy_id) {
+        return res.status(400).json({ error: "strategy_id is required" });
+      }
+
+      let historicalData = [];
+      
+      if (use_historical_data) {
+        // Get recent historical data for the tenant
+        const metricsResult = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error("Historical data fetch timeout"));
+          }, 10000);
+
+          this.streamClient.getTenantMetrics(
+            {
+              tenant_id: tenantId,
+              start_time: { seconds: Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000) },
+              end_time: { seconds: Math.floor(Date.now() / 1000) },
+            },
+            (error: any, response: any) => {
+              clearTimeout(timeout);
+              if (error) {
+                logger.warn("Could not fetch historical data:", error.message);
+                resolve([]);
+              } else {
+                resolve(response.historical_data || []);
+              }
+            }
+          );
+        });
+
+        historicalData = metricsResult as any[];
+      }
+
+      // Execute strategy via stream service
+      const result = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Strategy execution timeout"));
+        }, 60000); // 60 second timeout
+
+        this.streamClient.executeStrategy(
+          {
+            tenant_id: tenantId,
+            strategy_id: strategy_id,
+            config: config || {},
+            historical_data: historicalData,
+          },
+          (error: any, response: any) => {
+            clearTimeout(timeout);
+            if (error) {
+              logger.error("Strategy execution error:", error);
+              reject(error);
+            } else {
+              logger.info(`Strategy ${strategy_id} executed for tenant ${tenantId}`);
+              resolve(response);
+            }
+          }
+        );
+      });
+
+      res.json({
+        success: true,
+        message: "Strategy execution initiated",
+        execution_result: result,
+        strategy_id,
+        tenant_id: tenantId,
+        timestamp: new Date().toISOString(),
+      });
+
+    } catch (error) {
+      const err = error as Error;
+      logger.error("Strategy execution handler error:", error);
+      res.status(500).json({
+        error: err.message,
+        strategy_id: req.body.strategy_id,
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 
   // ✅ FIX: Universal data handler with proper method calls
@@ -409,5 +529,9 @@ app.listen(PORT, () => {
   logger.info("  POST /api/auth/login (public)");
   logger.info("  POST /api/data/universal (authenticated)");
   logger.info("  GET  /api/tenant/:id/config (authenticated)");
+  logger.info("  POST /api/strategy/execute (authenticated)");
+  logger.info("  GET  /api/strategy/:execution_id/result (authenticated)");
+  logger.info("  POST /api/notifications/:tenant_id/send (authenticated)");
+  logger.info("  GET  /api/notifications/websocket-info (authenticated)");
   logger.info("  GET  /health (public)");
 });
