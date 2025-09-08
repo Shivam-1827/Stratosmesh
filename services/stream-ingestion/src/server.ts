@@ -176,9 +176,10 @@ class UniversalDataStreamServiceImpl {
         await this.queueForProcessing(streamData, tenant);
 
         results.push({
-          record_id: `${streamId}_${Date.now()}_${i}`,
-          timestamp: timestamp,
-          data_type: streamData.dataType,
+          recordId: `${streamId}_${Date.now()}_${i}`,
+          processedAt: { seconds: Math.floor(Date.now() / 1000) },
+          success: true, // ✅ Mark as successful
+          errorMessage: "",
         });
       }
 
