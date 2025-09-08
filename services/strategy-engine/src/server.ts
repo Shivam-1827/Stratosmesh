@@ -1,4 +1,4 @@
-// services/strategy-engine/src/server.ts - FINAL FIX
+// services/strategy-engine/src/server.ts - COMPLETE FIX WITH ExecuteStrategy
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
@@ -228,9 +228,106 @@ class StrategyEngineService {
     }
   }
 
+  // ✅ CRITICAL FIX: Add the missing ExecuteStrategy method
+  async executeStrategy(call: any, callback: any) {
+    try {
+      const { tenantId, strategyId, config, data } = call.request;
+
+      logger.info(
+        `🚀 ExecuteStrategy called for tenant ${tenantId}, strategy ${strategyId}`
+      );
+
+      if (!tenantId || !strategyId) {
+        return callback(
+          new Error("Missing required fields: tenantId or strategyId")
+        );
+      }
+
+      // Validate tenant exists
+      const tenant = await this.db.collection("tenants").findOne({ tenantId });
+      if (!tenant) {
+        return callback(new Error("Tenant not found"));
+      }
+
+      // Check if strategy exists
+      const strategy = this.strategies.get(strategyId);
+      if (!strategy) {
+        return callback(new Error(`Strategy ${strategyId} not found`));
+      }
+
+      // Generate execution ID
+      const executionId = `exec_${Date.now()}_${Math.random()
+        .toString(36)
+        .substr(2, 9)}`;
+
+      // Get historical data if not provided
+      let historicalData = data || [];
+      if (!historicalData || historicalData.length === 0) {
+        logger.info("No data provided, fetching historical data...");
+        const cursor = this.db
+          .collection("stream_data")
+          .find({ tenantId })
+          .sort({ timestamp: -1 })
+          .limit(100);
+        historicalData = await cursor.toArray();
+        logger.info(`Fetched ${historicalData.length} historical records`);
+      }
+
+      // Execute strategy directly (immediate execution)
+      try {
+        const result = await strategy.execute(historicalData, config || {});
+
+        // Store result
+        await this.db.collection("strategy_results").insertOne({
+          tenantId,
+          executionId,
+          strategyId,
+          result,
+          status: "COMPLETED",
+          timestamp: new Date(),
+        });
+
+        logger.info(
+          `✅ Strategy ${strategyId} executed successfully for tenant ${tenantId}`
+        );
+
+        callback(null, {
+          executionId,
+          status: "COMPLETED",
+          message: "Strategy executed successfully",
+          startedAt: { seconds: Math.floor(Date.now() / 1000) },
+        });
+      } catch (executionError) {
+        const err = executionError as Error;
+        logger.error("Strategy execution error:", err);
+
+        // Store error
+        await this.db.collection("strategy_results").insertOne({
+          tenantId,
+          executionId,
+          strategyId,
+          error: err.message,
+          status: "FAILED",
+          timestamp: new Date(),
+        });
+
+        callback(null, {
+          executionId,
+          status: "FAILED",
+          message: `Strategy execution failed: ${err.message}`,
+          startedAt: { seconds: Math.floor(Date.now() / 1000) },
+        });
+      }
+    } catch (error) {
+      const err = error as Error;
+      logger.error("ExecuteStrategy handler error:", err);
+      callback(new Error(`Execution failed: ${err.message}`));
+    }
+  }
+
   async getStrategyResult(call: any, callback: any) {
     try {
-      const { executionId } = call.request; // ✅ FIX: camelCase
+      const { executionId } = call.request;
 
       const result = await this.db.collection("strategy_results").findOne({
         executionId: executionId,
@@ -256,7 +353,6 @@ class StrategyEngineService {
   }
 
   async listStrategies(call: any, callback: any) {
-    // ✅ FIX: camelCase
     try {
       const strategies = Array.from(this.strategies.values()).map(
         (strategy) => ({
@@ -276,6 +372,7 @@ class StrategyEngineService {
     }
   }
 }
+
 async function startServer() {
   try {
     const mongoClient = new MongoClient(
@@ -293,7 +390,6 @@ async function startServer() {
     const packageDefinition = protoLoader.loadSync(
       path.join(__dirname, "../../../shared/proto/analytics.proto"),
       {
-        // ✅ FIX: REMOVED keepCase
         longs: String,
         enums: String,
         defaults: true,
@@ -310,14 +406,19 @@ async function startServer() {
     );
 
     const server = new grpc.Server();
+
+    // ✅ CRITICAL FIX: Add ExecuteStrategy to the service methods
     server.addService(
       proto.stratosmesh.analytics.StrategyEngineService.service,
       {
-        // ✅ FIX: Ensure all handlers use camelCase
         getStrategyResult: strategyEngineService.getStrategyResult.bind(
           strategyEngineService
         ),
         listStrategies: strategyEngineService.listStrategies.bind(
+          strategyEngineService
+        ),
+        executeStrategy: strategyEngineService.executeStrategy.bind(
+          // ✅ ADDED THIS
           strategyEngineService
         ),
       }
@@ -333,6 +434,7 @@ async function startServer() {
           process.exit(1);
         }
         logger.info(`Strategy Engine service running on port ${boundPort}`);
+        logger.info("✅ ExecuteStrategy method is now implemented!");
         server.start();
       }
     );
