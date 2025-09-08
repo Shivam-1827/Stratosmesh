@@ -1,4 +1,4 @@
-// services/gateway/src/server.ts - FINAL, CORRECTED VERSION
+// services/gateway/src/server.ts - FINAL FIX WITH CORRECT METHOD NAMES
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -42,7 +42,6 @@ class UniversalGateway {
     this.setupHttpGrpcBridgeRoutes();
   }
 
-  // This helper function is now used ONLY for the final JSON response to the user.
   private keysToCamelCase(obj: any): any {
     if (Array.isArray(obj)) {
       return obj.map((v) => this.keysToCamelCase(v));
@@ -65,7 +64,7 @@ class UniversalGateway {
     );
 
     const packageDefinition = protoLoader.loadSync(protoPath, {
-      keepCase: true,
+      keepCase: true, // ✅ Keep original case for method names
       longs: String,
       enums: String,
       defaults: true,
@@ -75,7 +74,6 @@ class UniversalGateway {
     });
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
-    // ✅ THE FIX: Access services using the full package name.
     const serviceConfig = {
       tenant: {
         url: process.env.TENANT_SERVICE_URL || "localhost:50054",
@@ -108,13 +106,28 @@ class UniversalGateway {
         url,
         grpc.credentials.createInsecure()
       );
+
       client.waitForReady(Date.now() + 5000, (error: any) => {
-        if (error)
+        if (error) {
           logger.error(
             `Failed to connect to ${serviceName} at ${url}:`,
             error.message
           );
-        else logger.info(`✅ Connected to ${serviceName}`);
+        } else {
+          logger.info(`✅ Connected to ${serviceName}`);
+
+          // ✅ DEBUG: Log available methods
+          const methods = [];
+          for (const key in client) {
+            if (
+              typeof client[key] === "function" &&
+              key.charAt(0).toUpperCase() === key.charAt(0)
+            ) {
+              methods.push(key);
+            }
+          }
+          logger.info(`Available methods for ${serviceName}:`, methods);
+        }
       });
       return client;
     };
@@ -131,7 +144,7 @@ class UniversalGateway {
     this.streamClient = this.clients.stream;
     this.strategyClient = this.clients.strategy;
 
-    logger.info("All gRPC clients initialized using PascalCase methods.");
+    logger.info("All gRPC clients initialized");
   }
 
   private bridgeCall(service: string, method: string) {
@@ -147,26 +160,23 @@ class UniversalGateway {
           requestData: { ...requestData, client_secret: "[REDACTED]" },
         });
 
-        const pascalCaseMethod =
-          method.charAt(0).toUpperCase() + method.slice(1);
+        // ✅ Use the actual method name from proto
+        const actualMethodName = method;
 
         if (
           !this.clients[service] ||
-          !this.clients[service][pascalCaseMethod]
+          !this.clients[service][actualMethodName]
         ) {
-          const availableMethods = this.clients[service]
-            ? Object.keys(this.clients[service].$method_names)
-            : "none";
           logger.error(
-            `Method '${pascalCaseMethod}' not found on service '${service}'. Available: ${availableMethods}`
+            `Method '${actualMethodName}' not found on service '${service}'.`
           );
           throw new Error(
-            `Method ${pascalCaseMethod} not found on service ${service}`
+            `Method ${actualMethodName} not found on service ${service}`
           );
         }
 
         const result = await new Promise((resolve, reject) => {
-          this.clients[service][pascalCaseMethod](
+          this.clients[service][actualMethodName](
             requestData,
             (error: any, response: any) => {
               if (error) {
@@ -223,6 +233,7 @@ class UniversalGateway {
     };
   }
 
+  // ✅ FIX: Use correct method names (PascalCase)
   async handleUniversalData(req: any, res: any) {
     try {
       const tenantId = req.tenantId;
@@ -232,6 +243,11 @@ class UniversalGateway {
         return res.status(400).json({ error: "stream_id is required" });
       }
 
+      logger.info(
+        `Processing universal data for tenant ${tenantId}, stream ${stream_id}`
+      );
+
+      // Step 1: Call LLM service to process the data
       const llmRequest = {
         tenant_id: tenantId,
         stream_id: stream_id,
@@ -240,16 +256,24 @@ class UniversalGateway {
         desired_format: desired_format,
       };
 
+      logger.info("Calling LLM service...");
       const llmResult: any = await new Promise((resolve, reject) => {
+        // ✅ Use correct method name from your debug output
         this.llmClient.ProcessUniversalData(
           llmRequest,
           (error: any, response: any) => {
-            if (error) reject(error);
-            else resolve(response);
+            if (error) {
+              logger.error("LLM processing error:", error);
+              reject(error);
+            } else {
+              logger.info("LLM processing successful");
+              resolve(response);
+            }
           }
         );
       });
 
+      // Step 2: Call Stream service to store the processed data
       const streamRequest = {
         tenant_id: tenantId,
         stream_id: stream_id,
@@ -257,7 +281,10 @@ class UniversalGateway {
         original_format: "text/plain",
       };
 
+      logger.info("Calling Stream service with processed data...");
+
       const streamResult: any = await new Promise((resolve, reject) => {
+        // ✅ CRITICAL FIX: Use PascalCase method name
         this.streamClient.ProcessLLMData(
           streamRequest,
           (error: any, response: any) => {
@@ -266,7 +293,9 @@ class UniversalGateway {
               reject(error);
             } else {
               logger.info(
-                `Stream processing completed: ${response.records_processed} records`
+                `Stream processing completed: ${
+                  response.records_processed || response.recordsProcessed
+                } records`
               );
               resolve(response);
             }
@@ -297,39 +326,40 @@ class UniversalGateway {
   }
 
   private setupHttpGrpcBridgeRoutes() {
-    app.post("/api/tenant/create", this.bridgeCall("tenant", "createTenant"));
+    // ✅ Use correct method names (PascalCase as shown in debug)
+    app.post("/api/tenant/create", this.bridgeCall("tenant", "CreateTenant"));
     app.get(
       "/api/tenant/:tenant_id/config",
       authMiddleware,
-      this.bridgeCall("tenant", "getTenantConfig")
+      this.bridgeCall("tenant", "GetTenantConfig")
     );
     app.put(
       "/api/tenant/:tenant_id/limits",
       authMiddleware,
-      this.bridgeCall("tenant", "updateTenantLimits")
+      this.bridgeCall("tenant", "UpdateTenantLimits")
     );
-    app.post("/api/auth/login", this.bridgeCall("auth", "authenticate"));
-    app.post("/api/auth/validate", this.bridgeCall("auth", "validateToken"));
-    app.post("/api/auth/refresh", this.bridgeCall("auth", "refreshToken"));
+    app.post("/api/auth/login", this.bridgeCall("auth", "Authenticate"));
+    app.post("/api/auth/validate", this.bridgeCall("auth", "ValidateToken"));
+    app.post("/api/auth/refresh", this.bridgeCall("auth", "RefreshToken"));
     app.post(
       "/api/stream/llm",
       authMiddleware,
-      this.bridgeCall("stream", "processLLMData")
+      this.bridgeCall("stream", "ProcessLLMData") // ✅ PascalCase
     );
     app.get(
       "/api/stream/:tenant_id/metrics",
       authMiddleware,
-      this.bridgeCall("stream", "getTenantMetrics")
+      this.bridgeCall("stream", "GetTenantMetrics") // ✅ PascalCase
     );
     app.post(
       "/api/stream/execute-strategy",
       authMiddleware,
-      this.bridgeCall("stream", "executeStrategy")
+      this.bridgeCall("stream", "ExecuteStrategy") // ✅ PascalCase
     );
     app.get(
       "/api/strategy/:execution_id/result",
       authMiddleware,
-      this.bridgeCall("strategy", "getStrategyResult")
+      this.bridgeCall("strategy", "GetStrategyResult") // ✅ PascalCase
     );
     app.post(
       "/api/strategy/execute",
@@ -339,12 +369,12 @@ class UniversalGateway {
     app.get(
       "/api/strategy/available",
       authMiddleware,
-      this.bridgeCall("strategy", "listStrategies")
+      this.bridgeCall("strategy", "ListStrategies") // ✅ PascalCase
     );
     app.post(
       "/api/llm/analyze-format",
       authMiddleware,
-      this.bridgeCall("llm", "analyzeDataFormat")
+      this.bridgeCall("llm", "AnalyzeDataFormat") // ✅ PascalCase
     );
     logger.info("HTTP-gRPC bridge routes setup complete");
   }
@@ -370,6 +400,7 @@ class UniversalGateway {
         return res.status(400).json({ error: "strategy_id is required" });
       }
       const result = await new Promise((resolve, reject) => {
+        // ✅ Use PascalCase method name
         this.strategyClient.ExecuteStrategy(
           {
             tenant_id: tenantId,
