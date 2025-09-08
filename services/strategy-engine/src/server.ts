@@ -1,4 +1,4 @@
-// services/strategy-engine/src/server.ts - COMPLETE VERSION
+// services/strategy-engine/src/server.ts - FINAL FIX
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
@@ -68,7 +68,6 @@ class StrategyEngineService {
   }
 
   private async loadStrategies() {
-    // Load built-in strategies
     const movingAverageStrategy: StrategyPlugin1 = {
       id: "moving_average",
       name: "Moving Average",
@@ -182,7 +181,6 @@ class StrategyEngineService {
         throw new Error("Tenant not found");
       }
 
-      // For demo, execute strategy directly instead of worker pool
       const { strategyId, config, historicalData } = payload;
       const strategy = this.strategies.get(strategyId);
 
@@ -192,7 +190,6 @@ class StrategyEngineService {
 
       const result = await strategy.execute(historicalData || [], config || {});
 
-      // Store execution result
       await this.db.collection("strategy_results").insertOne({
         tenantId,
         executionId: correlationId,
@@ -200,7 +197,6 @@ class StrategyEngineService {
         timestamp: new Date(),
       });
 
-      // Publish result to notification service
       if (this.channel) {
         await this.channel.publish(
           "notifications",
@@ -232,13 +228,12 @@ class StrategyEngineService {
     }
   }
 
-  // gRPC method implementations
   async getStrategyResult(call: any, callback: any) {
     try {
-      const { execution_id } = call.request;
+      const { executionId } = call.request; // ✅ FIX: camelCase
 
       const result = await this.db.collection("strategy_results").findOne({
-        executionId: execution_id,
+        executionId: executionId,
       });
 
       if (!result) {
@@ -246,11 +241,11 @@ class StrategyEngineService {
       }
 
       callback(null, {
-        execution_id,
+        executionId: executionId,
         status: result.error ? "FAILED" : "COMPLETED",
         result: result.result || null,
         errors: result.error ? [result.error] : [],
-        created_at: { seconds: Math.floor(result.timestamp.getTime() / 1000) },
+        createdAt: { seconds: Math.floor(result.timestamp.getTime() / 1000) },
       });
     } catch (error) {
       const errorToLog =
@@ -260,7 +255,8 @@ class StrategyEngineService {
     }
   }
 
-  async getAvailableStrategies(call: any, callback: any) {
+  async listStrategies(call: any, callback: any) {
+    // ✅ FIX: camelCase
     try {
       const strategies = Array.from(this.strategies.values()).map(
         (strategy) => ({
@@ -269,21 +265,19 @@ class StrategyEngineService {
           version: strategy.version,
           enabled: true,
           description: `${strategy.name} strategy for data analysis`,
-          required_data_types: ["time_series", "numeric"],
+          requiredDataTypes: ["time_series", "numeric"],
         })
       );
 
       callback(null, { strategies });
     } catch (error) {
-      logger.error("Get available strategies error:", error);
+      logger.error("List available strategies error:", error);
       callback(error instanceof Error ? error : new Error(String(error)));
     }
   }
 }
-// Server startup function
 async function startServer() {
   try {
-    // MongoDB connection
     const mongoClient = new MongoClient(
       process.env.MONGODB_URI || "mongodb://localhost:27017"
     );
@@ -291,17 +285,15 @@ async function startServer() {
     const db = mongoClient.db("stratosmesh");
     logger.info("Connected to MongoDB");
 
-    // RabbitMQ connection
     const rabbitConnection = await amqp.connect(
       process.env.RABBITMQ_URI || "amqp://localhost"
     );
     logger.info("Connected to RabbitMQ");
 
-    // Load protobuf definition
     const packageDefinition = protoLoader.loadSync(
       path.join(__dirname, "../../../shared/proto/analytics.proto"),
       {
-        keepCase: true,
+        // ✅ FIX: REMOVED keepCase
         longs: String,
         enums: String,
         defaults: true,
@@ -312,24 +304,22 @@ async function startServer() {
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
-    // Create service instance
     const strategyEngineService = new StrategyEngineService(
       db,
       rabbitConnection
     );
 
-    // Create gRPC server
     const server = new grpc.Server();
     server.addService(
       proto.stratosmesh.analytics.StrategyEngineService.service,
       {
+        // ✅ FIX: Ensure all handlers use camelCase
         getStrategyResult: strategyEngineService.getStrategyResult.bind(
           strategyEngineService
         ),
-        getAvailableStrategies:
-          strategyEngineService.getAvailableStrategies.bind(
-            strategyEngineService
-          ),
+        listStrategies: strategyEngineService.listStrategies.bind(
+          strategyEngineService
+        ),
       }
     );
 
@@ -347,7 +337,6 @@ async function startServer() {
       }
     );
 
-    // Graceful shutdown
     process.on("SIGINT", async () => {
       logger.info("Shutting down gracefully...");
       server.forceShutdown();
@@ -361,7 +350,6 @@ async function startServer() {
   }
 }
 
-// Handle uncaught errors
 process.on("unhandledRejection", (reason, promise) => {
   logger.error("Unhandled Rejection at:", promise);
 });
@@ -371,7 +359,6 @@ process.on("uncaughtException", (error) => {
   process.exit(1);
 });
 
-// Start the server
 startServer().catch((error) => {
   logger.error("Fatal startup error:", error);
   process.exit(1);

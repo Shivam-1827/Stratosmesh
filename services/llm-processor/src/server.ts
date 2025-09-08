@@ -1,10 +1,10 @@
-// services/llm-processor/src/server.ts
+// services/llm-processor/src/server.ts - FINAL FIX
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import path from "path";
 import { LLMDataProcessor, UniversalInput } from "./processor";
 import { Logger } from "../../../shared/utils/logger";
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 
 dotenv.config();
 const logger = new Logger("LLMProcessor");
@@ -18,29 +18,29 @@ class LLMProcessorServiceImpl {
 
   async processUniversalData(call: any, callback: any) {
     try {
+      // With camelCase, we now use call.request.tenantId, etc.
       const request = call.request;
       logger.info(
-        `Processing universal data for tenant: ${request.tenant_id}, stream: ${request.stream_id}`
+        `Processing universal data for tenant: ${request.tenantId}, stream: ${request.streamId}`
       );
 
-      // Convert protobuf request to our internal format
       let inputData: UniversalInput | undefined;
 
-      if (request.raw_text) {
-        inputData = { type: "text", content: request.raw_text };
+      if (request.rawText) {
+        inputData = { type: "text", content: request.rawText };
         logger.info("Processing raw text input");
-      } else if (request.file_data) {
+      } else if (request.fileData) {
         inputData = {
           type: "file",
-          content: request.file_data,
+          content: request.fileData,
           mimetype: request.metadata?.mimetype || "application/octet-stream",
         };
         logger.info(`Processing file data (${inputData.mimetype})`);
-      } else if (request.file_url) {
-        inputData = { type: "url", content: request.file_url };
-        logger.info(`Processing URL: ${request.file_url}`);
-      } else if (request.structured_data) {
-        inputData = { type: "structured", content: request.structured_data };
+      } else if (request.fileUrl) {
+        inputData = { type: "url", content: request.fileUrl };
+        logger.info(`Processing URL: ${request.fileUrl}`);
+      } else if (request.structuredData) {
+        inputData = { type: "structured", content: request.structuredData };
         logger.info("Processing structured data");
       }
 
@@ -51,23 +51,21 @@ class LLMProcessorServiceImpl {
         );
       }
 
-      // Process the data
       const result = await this.processor.processData({
-        tenantId: request.tenant_id,
-        streamId: request.stream_id,
+        tenantId: request.tenantId,
+        streamId: request.streamId,
         inputData,
-        description: request.data_description || "Unknown data",
-        desiredFormat: request.desired_format || "time_series",
+        description: request.dataDescription || "Unknown data",
+        desiredFormat: request.desiredFormat || "time_series",
       });
 
       logger.info(
         `LLM processing completed: detected type: ${result.detectedType}, confidence: ${result.confidence}, records: ${result.records.length}`
       );
 
-      // Convert back to protobuf format
       callback(null, {
         success: true,
-        detected_type: result.detectedType,
+        detectedType: result.detectedType,
         records: result.records.map((record) => ({
           timestamp: { seconds: Math.floor(record.timestamp.getTime() / 1000) },
           payload: record.payload,
@@ -75,7 +73,7 @@ class LLMProcessorServiceImpl {
         })),
         schema: result.schema,
         confidence: result.confidence,
-        processing_steps: result.processingSteps,
+        processingSteps: result.processingSteps,
       });
     } catch (error) {
       const err = error as Error;
@@ -87,26 +85,25 @@ class LLMProcessorServiceImpl {
   async analyzeDataFormat(call: any, callback: any) {
     try {
       const request = call.request;
-      logger.info(`Analyzing data format for tenant: ${request.tenant_id}`);
+      logger.info(`Analyzing data format for tenant: ${request.tenantId}`);
 
       let inputData: UniversalInput;
 
-      if (request.text_sample) {
-        inputData = { type: "text", content: request.text_sample };
-      } else if (request.file_sample) {
+      if (request.textSample) {
+        inputData = { type: "text", content: request.textSample };
+      } else if (request.fileSample) {
         inputData = {
           type: "file",
-          content: request.file_sample,
+          content: request.fileSample,
           filename: request.filename,
-          mimetype: request.mime_type,
+          mimetype: request.mimeType,
         };
       } else {
         return callback(new Error("No sample data provided"));
       }
 
-      // Quick analysis without full processing
       const result = await this.processor.processData({
-        tenantId: request.tenant_id,
+        tenantId: request.tenantId,
         streamId: "format_analysis",
         inputData,
         description: "Format analysis sample",
@@ -115,11 +112,11 @@ class LLMProcessorServiceImpl {
 
       callback(null, {
         success: true,
-        detected_format: this.mapTypeToFormat(result.detectedType),
-        data_type: result.detectedType,
+        detectedFormat: this.mapTypeToFormat(result.detectedType),
+        dataType: result.detectedType,
         confidence: result.confidence,
-        suggested_schema: result.schema,
-        extraction_methods: result.processingSteps,
+        suggestedSchema: result.schema,
+        extractionMethods: result.processingSteps,
       });
     } catch (error) {
       const err = error as Error;
@@ -142,19 +139,18 @@ class LLMProcessorServiceImpl {
   }
 }
 
-// Start the server
 async function startServer() {
   try {
     const packageDefinition = protoLoader.loadSync(
       path.join(__dirname, "../../../shared/proto/analytics.proto"),
       {
-        keepCase: true, // keep snake_case field names from proto
-        longs: String, // int64 as string
-        enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
-        defaults: true, // populate default values
-        arrays: true, // ensure empty repeated fields are []
-        objects: true, // ensure empty nested messages are {}
-        oneofs: true, // populate oneof helper
+        // keepCase: true, // <-- REMOVED
+        longs: String,
+        enums: String,
+        defaults: true,
+        arrays: true,
+        objects: true,
+        oneofs: true,
       }
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
@@ -187,7 +183,6 @@ async function startServer() {
   }
 }
 
-// Handle graceful shutdown
 process.on("SIGINT", () => {
   logger.info("Received SIGINT, shutting down gracefully");
   process.exit(0);

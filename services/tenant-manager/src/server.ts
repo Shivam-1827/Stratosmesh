@@ -1,4 +1,4 @@
-
+// services/tenant-manager/src/server.ts - FINAL FIX
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
@@ -6,7 +6,7 @@ import bcrypt from "bcrypt";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { Logger } from "../../../shared/utils/logger";
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 
 dotenv.config();
 const logger = new Logger("TenantManager");
@@ -20,24 +20,19 @@ class TenantServiceImpl {
 
   async createTenant(call: any, callback: any) {
     try {
-      const { name, email, limits, allowed_strategies } = call.request;
+      // ✅ FIX: Use camelCase for request properties
+      const { name, email, limits, allowedStrategies } = call.request;
 
-      // Validate required fields
       if (!name || !email) {
         return callback(new Error("Name and email are required"));
       }
 
-      // Validate email format
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(email)) {
         return callback(new Error("Invalid email format"));
       }
 
-      // Validate limits are positive numbers
-      if (
-        limits?.max_concurrent_streams &&
-        limits.max_concurrent_streams <= 0
-      ) {
+      if (limits?.maxConcurrentStreams && limits.maxConcurrentStreams <= 0) {
         return callback(new Error("Limits must be positive numbers"));
       }
 
@@ -46,12 +41,11 @@ class TenantServiceImpl {
       const clientSecret = uuidv4();
       const hashedSecret = await bcrypt.hash(clientSecret, 10);
 
-      // ✅ Process request limits properly
       const processedLimits = {
-        maxConcurrentStreams: limits?.max_concurrent_streams || 10,
-        maxStrategiesPerHour: limits?.max_strategies_per_hour || 100,
-        maxStorageMb: limits?.max_storage_mb || 1000,
-        rateLimitPerMinute: limits?.rate_limit_per_minute || 60,
+        maxConcurrentStreams: limits?.maxConcurrentStreams || 10,
+        maxStrategiesPerHour: limits?.maxStrategiesPerHour || 100,
+        maxStorageMb: limits?.maxStorageMb || 1000,
+        rateLimitPerMinute: limits?.rateLimitPerMinute || 60,
       };
 
       const tenant = {
@@ -64,7 +58,7 @@ class TenantServiceImpl {
           clientId,
           clientSecret: hashedSecret,
         },
-        allowedStrategies: allowed_strategies || [
+        allowedStrategies: allowedStrategies || [
           "moving_average",
           "anomaly_detection",
           "arima_prediction",
@@ -92,27 +86,26 @@ class TenantServiceImpl {
       await this.db.collection("tenants").insertOne(tenant);
       await this.createTenantCollections(tenantId);
 
-      // 🔥 CRITICAL FIX: Proper protobuf field mapping
+      // ✅ FIX: Use camelCase for response properties
       const response = {
-        tenant_id: String(tenantId),
+        tenantId: String(tenantId),
         name: String(name),
-        status: "ACTIVE", // String, not enum
+        status: "ACTIVE",
         limits: {
-          max_concurrent_streams: Number(processedLimits.maxConcurrentStreams),
-          max_strategies_per_hour: Number(processedLimits.maxStrategiesPerHour),
-          max_storage_mb: Number(processedLimits.maxStorageMb),
-          rate_limit_per_minute: Number(processedLimits.rateLimitPerMinute),
+          maxConcurrentStreams: Number(processedLimits.maxConcurrentStreams),
+          maxStrategiesPerHour: Number(processedLimits.maxStrategiesPerHour),
+          maxStorageMb: Number(processedLimits.maxStorageMb),
+          rateLimitPerMinute: Number(processedLimits.rateLimitPerMinute),
         },
-        created_at: {
+        createdAt: {
           seconds: Number(Math.floor(Date.now() / 1000)),
         },
-        client_credentials: {
-          client_id: String(clientId),
-          client_secret: String(clientSecret),
+        clientCredentials: {
+          clientId: String(clientId),
+          clientSecret: String(clientSecret),
         },
       };
 
-      // 🔍 Debug logging
       logger.info(
         "Tenant creation response:",
         JSON.stringify(response, null, 2)
@@ -127,27 +120,27 @@ class TenantServiceImpl {
 
   async getTenantConfig(call: any, callback: any) {
     try {
-      const { tenant_id } = call.request;
+      const { tenantId } = call.request;
 
-      if (!tenant_id) {
+      if (!tenantId) {
         return callback(new Error("Missing tenant Id"));
       }
 
       const tenant = await this.db
         .collection("tenants")
-        .findOne({ tenantId: tenant_id });
+        .findOne({ tenantId: tenantId });
 
       if (!tenant) {
         return callback(new Error("Tenant not found"));
       }
 
       callback(null, {
-        tenant_id,
+        tenantId,
         config: {
           limits: tenant.limits,
-          allowed_strategies: tenant.allowedStrategies,
-          enabled_strategies: tenant.enabledStrategies,
-          strategy_configs: tenant.strategyConfigs,
+          allowedStrategies: tenant.allowedStrategies,
+          enabledStrategies: tenant.enabledStrategies,
+          strategyConfigs: tenant.strategyConfigs,
         },
       });
     } catch (error) {
@@ -158,21 +151,21 @@ class TenantServiceImpl {
 
   async updateTenantLimits(call: any, callback: any) {
     try {
-      const { tenant_id, limits } = call.request;
+      const { tenantId, limits } = call.request;
 
       const updateDoc = {
         $set: {
-          "limits.maxConcurrentStreams": limits.max_concurrent_streams,
-          "limits.maxStrategiesPerHour": limits.max_strategies_per_hour,
-          "limits.maxStorageMb": limits.max_storage_mb,
-          "limits.rateLimitPerMinute": limits.rate_limit_per_minute,
+          "limits.maxConcurrentStreams": limits.maxConcurrentStreams,
+          "limits.maxStrategiesPerHour": limits.maxStrategiesPerHour,
+          "limits.maxStorageMb": limits.maxStorageMb,
+          "limits.rateLimitPerMinute": limits.rateLimitPerMinute,
           updatedAt: new Date(),
         },
       };
 
       const result = await this.db
         .collection("tenants")
-        .updateOne({ tenantId: tenant_id }, updateDoc);
+        .updateOne({ tenantId: tenantId }, updateDoc);
 
       if (result.matchedCount === 0) {
         return callback(new Error("Tenant not found"));
@@ -180,18 +173,18 @@ class TenantServiceImpl {
 
       const tenant = await this.db
         .collection("tenants")
-        .findOne({ tenantId: tenant_id });
+        .findOne({ tenantId: tenantId });
 
       if (!tenant) {
         return callback(new Error("Tenant not found"));
       }
 
       callback(null, {
-        tenant_id,
+        tenantId,
         name: tenant.name,
         status: tenant.status,
         limits: tenant.limits,
-        created_at: { seconds: Math.floor(tenant.createdAt.getTime() / 1000) },
+        createdAt: { seconds: Math.floor(tenant.createdAt.getTime() / 1000) },
       });
     } catch (error) {
       logger.error("Update tenant limits error:", error);
@@ -199,9 +192,7 @@ class TenantServiceImpl {
     }
   }
 
-  // ✅ SOLUTION: Add proper indexes in tenant-manager
   private async createTenantCollections(tenantId: string) {
-    // Existing indexes are good, but add more specific ones
     await this.db.collection("stream_data").createIndex({
       tenantId: 1,
       streamId: 1,
@@ -227,7 +218,7 @@ class TenantServiceImpl {
         expiresAt: 1,
       },
       { expireAfterSeconds: 0 }
-    ); // Auto-cleanup expired tokens
+    );
   }
 }
 
@@ -241,15 +232,15 @@ async function startServer() {
   const packageDefinition = protoLoader.loadSync(
     path.join(__dirname, "../../../shared/proto/analytics.proto"),
     {
-      keepCase: true, // keep snake_case field names from proto
-      longs: String, // int64 as string
-      enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
-      defaults: true, // populate default values
-      arrays: true, // ensure empty repeated fields are []
-      objects: true, // ensure empty nested messages are {}
-      oneofs: true, // populate oneof helper
+      // ✅ FIX: REMOVED keepCase and other options for consistency
+      longs: String,
+      enums: String,
+      defaults: true,
+      arrays: true,
+      objects: true,
+      oneofs: true,
     }
-  );;
+  );
   const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
   const server = new grpc.Server();
@@ -272,7 +263,6 @@ async function startServer() {
         return;
       }
       logger.info(`Tenant manager service running on port ${port}`);
-      
     }
   );
 }

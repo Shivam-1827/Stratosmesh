@@ -1,3 +1,4 @@
+// services/stream-ingestion/src/server.ts - FINAL FIX
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { MongoClient, Db } from "mongodb";
@@ -8,7 +9,7 @@ import { Logger } from "../../../shared/utils/logger";
 import { StreamData, TenantContext } from "../../../shared/types";
 import { RateLimiter } from "../../../shared/utils/rate-limiter";
 import { MetricsCollector } from "../../../shared/utils/metrics";
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 
 dotenv.config();
 
@@ -31,7 +32,6 @@ class UniversalDataStreamServiceImpl {
   async init(): Promise<void> {
     this.channel = await this.rabbitConnection.createChannel();
 
-    // Declare exchanges and queues
     await this.channel.assertExchange("stream.data", "topic", {
       durable: true,
     });
@@ -45,75 +45,69 @@ class UniversalDataStreamServiceImpl {
     logger.info("Stream ingestion service initialized");
   }
 
-  // Universal LLM data processing (main entry point)
   async processLLMData(call: any, callback: any) {
     try {
-      const { tenant_id, stream_id, processed_data, original_format } =
+      // ✅ FIX: Use camelCase for request properties
+      const { tenantId, streamId, processedData, originalFormat } =
         call.request;
 
       logger.info(
-        `Processing LLM data for tenant ${tenant_id}, stream ${stream_id}`
+        `Processing LLM data for tenant ${tenantId}, stream ${streamId}`
       );
       logger.info(
-        `Detected type: ${processed_data.detected_type}, confidence: ${processed_data.confidence}`
+        `Detected type: ${processedData.detectedType}, confidence: ${processedData.confidence}`
       );
 
-      // Validate tenant
-      const tenant = await this.getTenantContext(tenant_id);
+      const tenant = await this.getTenantContext(tenantId);
       if (!tenant) {
         return callback(new Error("Tenant not found or inactive"));
       }
 
       const results = [];
 
-      // Process each record from LLM processor
-      for (const record of processed_data.records) {
+      for (const record of processedData.records) {
         const streamData: StreamData = {
-          tenantId: tenant_id,
-          streamId: stream_id,
-          dataType: processed_data.detected_type, // Use LLM's detection directly
+          tenantId: tenantId,
+          streamId: streamId,
+          dataType: processedData.detectedType,
           payload: record.payload,
           timestamp: new Date(record.timestamp.seconds * 1000),
           metadata: {
             ...record.metadata,
             llm_processed: true,
-            original_format: original_format,
-            confidence: processed_data.confidence,
-            processing_steps: processed_data.processing_steps,
-            schema: processed_data.schema,
+            original_format: originalFormat,
+            confidence: processedData.confidence,
+            processing_steps: processedData.processingSteps,
+            schema: processedData.schema,
           },
         };
 
-        // Store in database
         await this.storeStreamData(streamData);
-
-        // Queue for strategy processing if auto-processing is enabled
         await this.queueForProcessing(streamData, tenant);
 
         results.push({
-          record_id: `${stream_id}_${Date.now()}_${results.length}`,
+          record_id: `${streamId}_${Date.now()}_${results.length}`,
           timestamp: streamData.timestamp,
           data_type: streamData.dataType,
         });
       }
 
-      // Update metrics
       this.metrics.incrementCounter("llm_streams_processed_total", {
-        tenant_id: tenant_id,
-        detected_type: processed_data.detected_type,
-        original_format: original_format,
+        tenant_id: tenantId,
+        detected_type: processedData.detectedType,
+        original_format: originalFormat,
       });
 
       callback(null, {
         success: true,
-        records_processed: results.length,
-        detected_type: processed_data.detected_type,
-        confidence: processed_data.confidence,
+        recordsProcessed: results.length, // ✅ FIX: Use camelCase for response
+        detectedType: processedData.detectedType,
+        confidence: processedData.confidence,
         results: results,
       });
 
       logger.info(
-        `Successfully processed ${results.length} records for tenant ${tenant_id}`
+        `Successfully processed ${results.length} records for tenant ${tenantId}`
       );
     } catch (error) {
       const err = error as Error;
@@ -122,7 +116,6 @@ class UniversalDataStreamServiceImpl {
     }
   }
 
-  // Legacy real-time stream processing (keep for backward compatibility)
   async processRealTimeStream(call: grpc.ServerDuplexStream<any, any>) {
     const tenantId = call.metadata.get("tenant-id")[0] as string;
     let streamCount = 0;
@@ -134,7 +127,6 @@ class UniversalDataStreamServiceImpl {
         try {
           streamCount++;
 
-          // Rate limit check
           const allowed = await this.rateLimiter.checkLimit(
             tenantId,
             tenant.limits.rateLimitPerMinute
@@ -142,22 +134,21 @@ class UniversalDataStreamServiceImpl {
 
           if (!allowed) {
             call.write({
-              tenant_id: tenantId,
-              stream_id: request.stream_id,
+              tenantId: tenantId,
+              streamId: request.streamId,
               result: {
                 type: "ERROR",
                 data: { message: "Rate limit exceeded" },
               },
-              processed_at: { seconds: Math.floor(Date.now() / 1000) },
+              processedAt: { seconds: Math.floor(Date.now() / 1000) },
             });
             return;
           }
 
-          // Prepare stream data with flexible data type
           const streamData: StreamData = {
-            tenantId: request.tenant_id,
-            streamId: request.stream_id,
-            dataType: request.data_type || "custom_data", // Accept any data type
+            tenantId: request.tenantId,
+            streamId: request.streamId,
+            dataType: request.dataType || "custom_data",
             payload: request.payload,
             timestamp: new Date(request.timestamp.seconds * 1000),
             metadata: request.metadata || {},
@@ -166,17 +157,16 @@ class UniversalDataStreamServiceImpl {
           await this.storeStreamData(streamData);
           await this.queueForProcessing(streamData, tenant);
 
-          // Acknowledge back
           call.write({
-            tenant_id: tenantId,
-            stream_id: request.stream_id,
+            tenantId: tenantId,
+            streamId: request.streamId,
             result: {
               result_id: `result_${Date.now()}`,
               type: "RECEIVED",
               data: { status: "queued_for_processing" },
               confidence: 1.0,
             },
-            processed_at: { seconds: Math.floor(Date.now() / 1000) },
+            processedAt: { seconds: Math.floor(Date.now() / 1000) },
           });
 
           this.metrics.incrementCounter("streams_processed", {
@@ -185,8 +175,8 @@ class UniversalDataStreamServiceImpl {
         } catch (error) {
           logger.error("Stream processing error:", error);
           call.write({
-            tenant_id: tenantId,
-            stream_id: request.stream_id,
+            tenantId: tenantId,
+            streamId: request.streamId,
             result: {
               type: "ERROR",
               data: {
@@ -218,15 +208,15 @@ class UniversalDataStreamServiceImpl {
     callback: grpc.sendUnaryData<any>
   ) {
     try {
-      const { tenant_id, start_time, end_time } = call.request;
+      const { tenantId, startTime, endTime } = call.request;
 
-      const startDate = new Date(start_time.seconds * 1000);
-      const endDate = new Date(end_time.seconds * 1000);
+      const startDate = new Date(startTime.seconds * 1000);
+      const endDate = new Date(endTime.seconds * 1000);
 
       const pipeline = [
         {
           $match: {
-            tenantId: tenant_id,
+            tenantId: tenantId,
             timestamp: { $gte: startDate, $lte: endDate },
           },
         },
@@ -249,7 +239,7 @@ class UniversalDataStreamServiceImpl {
       const metrics = results[0] || {};
 
       callback(null, {
-        tenant_id,
+        tenantId,
         metrics: {
           streams_processed: {
             value: metrics.streamsProcessed || 0,
@@ -287,7 +277,7 @@ class UniversalDataStreamServiceImpl {
     callback: grpc.sendUnaryData<any>
   ) {
     try {
-      const { tenant_id, strategy_id, config, historical_data } = call.request;
+      const { tenantId, strategyId, config, historicalData } = call.request;
 
       const executionId = `exec_${Date.now()}_${Math.random()
         .toString(36)
@@ -295,25 +285,25 @@ class UniversalDataStreamServiceImpl {
 
       const message = {
         type: "EXECUTE_STRATEGY",
-        tenantId: tenant_id,
+        tenantId: tenantId,
         payload: {
           executionId,
-          strategyId: strategy_id,
+          strategyId: strategyId,
           config,
-          historicalData: historical_data,
+          historicalData: historicalData,
         },
         correlationId: executionId,
       };
 
       this.channel.publish(
         "strategy.execution",
-        `strategy.${tenant_id}`,
+        `strategy.${tenantId}`,
         Buffer.from(JSON.stringify(message)),
         { persistent: true }
       );
 
       callback(null, {
-        execution_id: executionId,
+        executionId: executionId,
         status: "PENDING",
         result: null,
         errors: [],
@@ -336,7 +326,6 @@ class UniversalDataStreamServiceImpl {
       logger.info(`Tenant lookup result:`, tenant ? "Found" : "Not found");
 
       if (!tenant) {
-        // ✅ FIX: More detailed error for debugging
         const allTenants = await this.db
           .collection("tenants")
           .find({})
@@ -373,7 +362,6 @@ class UniversalDataStreamServiceImpl {
 
   private async queueForProcessing(data: StreamData, tenant: TenantContext) {
     try {
-      // Check if tenant has auto-processing enabled
       const autoProcessing = tenant.metadata?.autoProcessing !== false;
 
       if (!autoProcessing) {
@@ -398,14 +386,12 @@ class UniversalDataStreamServiceImpl {
       logger.debug(`Queued for processing: ${data.tenantId}/${data.streamId}`);
     } catch (error) {
       logger.error("Error queueing for processing:", error);
-      // Don't throw - this shouldn't fail the main operation
     }
   }
 }
 
 async function startServer() {
   try {
-    // MongoDB connection
     const mongoClient = new MongoClient(
       process.env.MONGODB_URI || "mongodb://localhost:27017"
     );
@@ -413,39 +399,36 @@ async function startServer() {
     const db = mongoClient.db("stratosmesh");
     logger.info("Connected to MongoDB");
 
-    // RabbitMQ connection
     const rabbitConnection = await amqp.connect(
       process.env.RABBITMQ_URI || "amqp://localhost"
     );
     logger.info("Connected to RabbitMQ");
 
-    // Load protobuf definition
     const packageDefinition = protoLoader.loadSync(
       path.join(__dirname, "../../../shared/proto/analytics.proto"),
       {
-        keepCase: true, // keep snake_case field names from proto
-        longs: String, // int64 as string
-        enums: String, // enums as string names (“ACTIVE”) so Gateway doesn’t coerce
-        defaults: true, // populate default values
-        arrays: true, // ensure empty repeated fields are []
-        objects: true, // ensure empty nested messages are {}
-        oneofs: true, // populate oneof helper
+        // ✅ FIX: REMOVED keepCase
+        longs: String,
+        enums: String,
+        defaults: true,
+        arrays: true,
+        objects: true,
+        oneofs: true,
       }
     );
     const proto = grpc.loadPackageDefinition(packageDefinition) as any;
 
-    // Create and initialize service
     const dataStreamServiceImpl = new UniversalDataStreamServiceImpl(
       db,
       rabbitConnection
     );
     await dataStreamServiceImpl.init();
 
-    // Create gRPC server
     const server = new grpc.Server();
     server.addService(
       proto.stratosmesh.analytics.EnhancedStreamService.service,
       {
+        // ✅ FIX: Ensure all handlers use camelCase
         processRealTimeStream: dataStreamServiceImpl.processRealTimeStream.bind(
           dataStreamServiceImpl
         ),
@@ -477,7 +460,6 @@ async function startServer() {
       }
     );
 
-    // Graceful shutdown
     process.on("SIGINT", async () => {
       logger.info("Shutting down gracefully...");
       server.forceShutdown();

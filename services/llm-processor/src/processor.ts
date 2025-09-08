@@ -1,12 +1,12 @@
-// services/llm-processor/src/processor.ts
+// services/llm-processor/src/processor.ts - ENHANCED ERROR HANDLING
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import pdf from "pdf-parse";
 import * as XLSX from "xlsx";
 import csv from "csv-parser";
 import axios from "axios";
 import { Readable } from "stream";
-import dotenv from 'dotenv';
-import {Logger} from "../../../shared/utils/logger"
+import dotenv from "dotenv";
+import { Logger } from "../../../shared/utils/logger";
 
 const logger = new Logger("llm-processor");
 
@@ -28,10 +28,27 @@ interface ProcessedData {
 
 export class LLMDataProcessor {
   private geminiModel: any;
+  private geminiAvailable: boolean = false;
 
   constructor() {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-    this.geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey || apiKey === "") {
+      logger.warn("⚠️ GEMINI_API_KEY not found - using fallback analysis only");
+      this.geminiAvailable = false;
+    } else {
+      try {
+        const genAI = new GoogleGenerativeAI(apiKey);
+        this.geminiModel = genAI.getGenerativeModel({
+          model: "gemini-1.5-flash",
+        });
+        this.geminiAvailable = true;
+        logger.info("✅ Gemini AI initialized successfully");
+      } catch (error) {
+        logger.error("Failed to initialize Gemini AI:", error);
+        this.geminiAvailable = false;
+      }
+    }
   }
 
   async processData(input: {
@@ -72,13 +89,18 @@ export class LLMDataProcessor {
           throw new Error("Unsupported input type");
       }
 
-      // Step 2: Analyze content with Gemini
-      const analysisResult = await this.analyzeWithGemini(
+      // Step 2: Analyze content (with or without Gemini)
+      const analysisResult = await this.analyzeContent(
         rawContent,
         description,
         desiredFormat
       );
-      processingSteps.push("Analyzed content structure with Gemini AI");
+
+      if (this.geminiAvailable) {
+        processingSteps.push("Analyzed content structure with Gemini AI");
+      } else {
+        processingSteps.push("Analyzed content structure with fallback logic");
+      }
 
       // Step 3: Extract structured data based on analysis
       const structuredData = await this.extractStructuredData(
@@ -102,7 +124,7 @@ export class LLMDataProcessor {
         processingSteps,
       };
     } catch (error) {
-      console.error("LLM processing error:", error);
+      logger.error("LLM processing error:", error);
       const err = error as Error;
       let rawContent: string = "";
 
@@ -124,6 +146,30 @@ export class LLMDataProcessor {
         confidence: 0.3,
         processingSteps: [...processingSteps, `Error: ${err.message}`],
       };
+    }
+  }
+
+  // ✅ NEW: Unified analysis method that handles both Gemini and fallback
+  private async analyzeContent(
+    content: string,
+    description: string,
+    desiredFormat: string
+  ): Promise<any> {
+    if (this.geminiAvailable) {
+      try {
+        logger.info("Attempting Gemini analysis...");
+        return await this.analyzeWithGemini(
+          content,
+          description,
+          desiredFormat
+        );
+      } catch (error) {
+        logger.warn("Gemini analysis failed, using fallback:", error);
+        return this.fallbackAnalysis(content, description);
+      }
+    } else {
+      logger.info("Using fallback analysis (Gemini not available)");
+      return this.fallbackAnalysis(content, description);
     }
   }
 
@@ -221,9 +267,9 @@ Respond with ONLY the JSON object, no additional text or formatting.
       const response = await result.response;
       const text = response.text().trim();
 
-      logger.info("Raw Gemini response:", text);
+      logger.info("Raw Gemini response length:", text.length);
 
-      // ✅ FIX: Better JSON extraction
+      // ✅ Enhanced JSON extraction
       let jsonText = text;
 
       // Remove markdown formatting if present
@@ -245,22 +291,23 @@ Respond with ONLY the JSON object, no additional text or formatting.
         jsonText = jsonMatch[0];
       }
 
-      logger.info("Extracted JSON text:", jsonText);
+      logger.info("Extracted JSON text length:", jsonText.length);
 
       try {
         const parsed = JSON.parse(jsonText);
+        logger.info("✅ Successfully parsed Gemini response");
         return {
           ...parsed,
           confidence: Math.min(Math.max(parsed.confidence || 0.5, 0.1), 1.0),
         };
       } catch (parseError) {
         logger.error("JSON parsing failed:", parseError);
-        logger.error("Failed JSON text:", jsonText);
+        logger.error("Failed JSON text preview:", jsonText.substring(0, 200));
         throw new Error(`JSON parsing failed: ${parseError}`);
       }
     } catch (error) {
-      logger.error("Gemini analysis error:", error);
-      return this.fallbackAnalysis(content, description);
+      logger.error("Gemini API error:", error);
+      throw error; // Let caller handle fallback
     }
   }
 
@@ -283,10 +330,7 @@ Respond with ONLY the JSON object, no additional text or formatting.
       }
     } catch (error) {
       const err = error as Error;
-      console.warn(
-        "Structured extraction failed, using fallback:",
-        err.message
-      );
+      logger.warn("Structured extraction failed, using fallback:", err.message);
       return this.parseAsFallback(content);
     }
   }
@@ -415,34 +459,162 @@ Respond with ONLY the JSON object, no additional text or formatting.
     });
   }
 
+  // ✅ ENHANCED: Much better fallback analysis
   private fallbackAnalysis(content: string, description: string): any {
-    logger.info("Using fallback analysis");
+    logger.info("Using enhanced fallback analysis");
 
-    // Try to detect data type from content
     let dataType = "generic_data";
     let extractionMethod = "structured_text";
+    let confidence = 0.6; // Higher confidence for rule-based detection
+    let timestampField = null;
+    let valueFields: string[] = [];
+    let categoryFields: string[] = [];
 
-    if (content.includes(",") && content.includes("\n")) {
-      dataType = "tabular_data";
+    // Enhanced detection logic
+    const lines = content.split("\n").filter((line) => line.trim());
+    const firstLine = lines[0] || "";
+    const sampleLines = lines.slice(0, 5);
+
+    // CSV detection
+    if (firstLine.includes(",") && lines.length > 1) {
       extractionMethod = "csv";
-    } else if (content.includes("{") && content.includes("}")) {
-      dataType = "json_data";
-      extractionMethod = "json";
-    } else if (content.match(/\d{4}-\d{2}-\d{2}/)) {
-      dataType = "time_series_data";
+      dataType = "tabular_data";
+      confidence = 0.8;
+
+      // Try to parse CSV headers
+      const headers = firstLine
+        .split(",")
+        .map((h) => h.trim().replace(/['"]/g, ""));
+
+      headers.forEach((header) => {
+        const lowerHeader = header.toLowerCase();
+        if (
+          lowerHeader.includes("date") ||
+          lowerHeader.includes("time") ||
+          lowerHeader.includes("timestamp")
+        ) {
+          timestampField = header;
+        } else if (
+          lowerHeader.includes("price") ||
+          lowerHeader.includes("value") ||
+          lowerHeader.includes("amount") ||
+          lowerHeader.includes("quantity") ||
+          lowerHeader.includes("count")
+        ) {
+          valueFields.push(header);
+        } else {
+          categoryFields.push(header);
+        }
+      });
+
+      // Further classify based on content
+      if (
+        description.toLowerCase().includes("stock") ||
+        description.toLowerCase().includes("trading") ||
+        firstLine.toLowerCase().includes("price") ||
+        firstLine.toLowerCase().includes("buy") ||
+        firstLine.toLowerCase().includes("sell")
+      ) {
+        dataType = "financial_data";
+        confidence = 0.9;
+      } else if (
+        description.toLowerCase().includes("sensor") ||
+        description.toLowerCase().includes("iot")
+      ) {
+        dataType = "sensor_data";
+        confidence = 0.85;
+      } else if (
+        description.toLowerCase().includes("sales") ||
+        description.toLowerCase().includes("revenue")
+      ) {
+        dataType = "sales_data";
+        confidence = 0.85;
+      }
     }
+    // JSON detection
+    else if (
+      (content.trim().startsWith("{") && content.trim().endsWith("}")) ||
+      (content.trim().startsWith("[") && content.trim().endsWith("]"))
+    ) {
+      dataType = "structured_data";
+      extractionMethod = "json";
+      confidence = 0.9;
+    }
+    // Log detection
+    else if (
+      sampleLines.some(
+        (line) =>
+          /\d{4}-\d{2}-\d{2}/.test(line) || /\d{2}:\d{2}:\d{2}/.test(line)
+      )
+    ) {
+      dataType = "log_data";
+      extractionMethod = "logs";
+      confidence = 0.75;
+      timestampField = "timestamp";
+      valueFields = ["value"];
+    }
+    // Time series detection
+    else if (/\d{4}-\d{2}-\d{2}/.test(content) && /[\d.]+/.test(content)) {
+      dataType = "time_series_data";
+      confidence = 0.8;
+      timestampField = "timestamp";
+      valueFields = ["value"];
+    }
+
+    // Default fallbacks if nothing detected
+    if (valueFields.length === 0) {
+      valueFields = ["value"];
+    }
+
+    const suggestedAnalytics = this.getSuggestedAnalytics(dataType);
+
+    logger.info(
+      `Fallback analysis result: ${dataType} (confidence: ${confidence})`
+    );
 
     return {
       dataType,
-      confidence: 0.5,
+      confidence,
       schema: {
-        timestampField: null,
-        valueFields: ["value"],
-        categoryFields: [],
+        timestampField,
+        valueFields,
+        categoryFields,
       },
       extractionMethod,
-      suggestedAnalytics: ["moving_average", "anomaly_detection"],
+      suggestedAnalytics,
     };
+  }
+
+  private getSuggestedAnalytics(dataType: string): string[] {
+    const analyticsMap: Record<string, string[]> = {
+      financial_data: [
+        "moving_average",
+        "anomaly_detection",
+        "arima_prediction",
+        "trend_analysis",
+      ],
+      sensor_data: ["anomaly_detection", "moving_average", "threshold_alerts"],
+      sales_data: [
+        "trend_analysis",
+        "seasonal_decomposition",
+        "growth_analysis",
+      ],
+      log_data: [
+        "anomaly_detection",
+        "pattern_recognition",
+        "frequency_analysis",
+      ],
+      time_series_data: [
+        "arima_prediction",
+        "moving_average",
+        "seasonal_analysis",
+      ],
+      tabular_data: ["moving_average", "anomaly_detection"],
+      structured_data: ["aggregation", "classification"],
+      generic_data: ["moving_average", "anomaly_detection"],
+    };
+
+    return analyticsMap[dataType] || ["moving_average", "anomaly_detection"];
   }
 
   private handleStructuredData(
