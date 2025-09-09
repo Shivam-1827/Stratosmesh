@@ -18,9 +18,108 @@ class TenantServiceImpl {
     this.db = db;
   }
 
+  // async createTenant(call: any, callback: any) {
+  //   try {
+  //     // ✅ FIX: Use camelCase for request properties
+  //     const { name, email, limits, allowedStrategies } = call.request;
+
+  //     if (!name || !email) {
+  //       return callback(new Error("Name and email are required"));
+  //     }
+
+  //     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  //     if (!emailRegex.test(email)) {
+  //       return callback(new Error("Invalid email format"));
+  //     }
+
+  //     if (limits?.maxConcurrentStreams && limits.maxConcurrentStreams <= 0) {
+  //       return callback(new Error("Limits must be positive numbers"));
+  //     }
+
+  //     const tenantId = uuidv4();
+  //     const clientId = `client_${Date.now()}`;
+  //     const clientSecret = uuidv4();
+  //     const hashedSecret = await bcrypt.hash(clientSecret, 10);
+
+  //     const processedLimits = {
+  //       maxConcurrentStreams: limits?.maxConcurrentStreams || 10,
+  //       maxStrategiesPerHour: limits?.maxStrategiesPerHour || 100,
+  //       maxStorageMb: limits?.maxStorageMb || 1000,
+  //       rateLimitPerMinute: limits?.rateLimitPerMinute || 60,
+  //     };
+
+  //     const tenant = {
+  //       tenantId,
+  //       name,
+  //       email,
+  //       status: "ACTIVE",
+  //       limits: processedLimits,
+  //       credentials: {
+  //         clientId,
+  //         clientSecret: hashedSecret,
+  //       },
+  //       allowedStrategies: allowedStrategies || [
+  //         "moving_average",
+  //         "anomaly_detection",
+  //         "arima_prediction",
+  //         "hybrid_arima_ma",
+  //       ],
+  //       enabledStrategies: ["moving_average", "arima_prediction"],
+  //       strategyConfigs: {
+  //         moving_average: { period: 20 },
+  //         anomaly_detection: { threshold: 2 },
+  //         arima_prediction: {
+  //           p: 2,
+  //           d: 1,
+  //           q: 2,
+  //           steps: 5,
+  //         },
+  //         hybrid_arima_ma: {
+  //           arimaConfig: { p: 2, d: 1, q: 2, steps: 3 },
+  //           maConfig: { period: 20 },
+  //         },
+  //       },
+  //       createdAt: new Date(),
+  //       updatedAt: new Date(),
+  //     };
+
+  //     await this.db.collection("tenants").insertOne(tenant);
+  //     await this.createTenantCollections(tenantId);
+
+  //     // ✅ FIX: Use camelCase for response properties
+  //     const response = {
+  //       tenantId: String(tenantId),
+  //       name: String(name),
+  //       status: "ACTIVE",
+  //       limits: {
+  //         maxConcurrentStreams: Number(processedLimits.maxConcurrentStreams),
+  //         maxStrategiesPerHour: Number(processedLimits.maxStrategiesPerHour),
+  //         maxStorageMb: Number(processedLimits.maxStorageMb),
+  //         rateLimitPerMinute: Number(processedLimits.rateLimitPerMinute),
+  //       },
+  //       createdAt: {
+  //         seconds: Number(Math.floor(Date.now() / 1000)),
+  //       },
+  //       clientCredentials: {
+  //         clientId: String(clientId),
+  //         clientSecret: String(clientSecret),
+  //       },
+  //     };
+
+  //     logger.info(
+  //       "Tenant creation response:",
+  //       JSON.stringify(response, null, 2)
+  //     );
+
+  //     callback(null, response);
+  //   } catch (error) {
+  //     logger.error("Create tenant error:", error);
+  //     callback(error);
+  //   }
+  // }
+
   async createTenant(call: any, callback: any) {
     try {
-      // ✅ FIX: Use camelCase for request properties
       const { name, email, limits, allowedStrategies } = call.request;
 
       if (!name || !email) {
@@ -32,21 +131,32 @@ class TenantServiceImpl {
         return callback(new Error("Invalid email format"));
       }
 
-      if (limits?.maxConcurrentStreams && limits.maxConcurrentStreams <= 0) {
-        return callback(new Error("Limits must be positive numbers"));
-      }
+      // FIX: Properly handle limits with fallback defaults
+      const processedLimits = {
+        maxConcurrentStreams:
+          limits && limits.maxConcurrentStreams > 0
+            ? Number(limits.maxConcurrentStreams)
+            : 50,
+        maxStrategiesPerHour:
+          limits && limits.maxStrategiesPerHour > 0
+            ? Number(limits.maxStrategiesPerHour)
+            : 200,
+        maxStorageMb:
+          limits && limits.maxStorageMb > 0
+            ? Number(limits.maxStorageMb)
+            : 5000,
+        rateLimitPerMinute:
+          limits && limits.rateLimitPerMinute > 0
+            ? Number(limits.rateLimitPerMinute)
+            : 100,
+      };
+
+      logger.info("Processing tenant creation with limits:", processedLimits);
 
       const tenantId = uuidv4();
       const clientId = `client_${Date.now()}`;
       const clientSecret = uuidv4();
       const hashedSecret = await bcrypt.hash(clientSecret, 10);
-
-      const processedLimits = {
-        maxConcurrentStreams: limits?.maxConcurrentStreams || 10,
-        maxStrategiesPerHour: limits?.maxStrategiesPerHour || 100,
-        maxStorageMb: limits?.maxStorageMb || 1000,
-        rateLimitPerMinute: limits?.rateLimitPerMinute || 60,
-      };
 
       const tenant = {
         tenantId,
@@ -86,7 +196,7 @@ class TenantServiceImpl {
       await this.db.collection("tenants").insertOne(tenant);
       await this.createTenantCollections(tenantId);
 
-      // ✅ FIX: Use camelCase for response properties
+      // FIX: Ensure all numbers are properly converted
       const response = {
         tenantId: String(tenantId),
         name: String(name),
@@ -94,27 +204,28 @@ class TenantServiceImpl {
         limits: {
           maxConcurrentStreams: Number(processedLimits.maxConcurrentStreams),
           maxStrategiesPerHour: Number(processedLimits.maxStrategiesPerHour),
-          maxStorageMb: Number(processedLimits.maxStorageMb),
+          maxStorageMb: String(processedLimits.maxStorageMb), // Keep as string if proto expects string
           rateLimitPerMinute: Number(processedLimits.rateLimitPerMinute),
         },
         createdAt: {
-          seconds: Number(Math.floor(Date.now() / 1000)),
+          seconds: String(Math.floor(Date.now() / 1000)), // Convert to string for protobuf
+          nanos: 0,
         },
         clientCredentials: {
           clientId: String(clientId),
-          clientSecret: String(clientSecret),
+          clientSecret: String(clientSecret), // Only return in creation response
         },
       };
 
-      logger.info(
-        "Tenant creation response:",
-        JSON.stringify(response, null, 2)
-      );
+      logger.info("✅ Tenant created successfully:", {
+        tenantId: response.tenantId,
+        limits: response.limits,
+      });
 
       callback(null, response);
     } catch (error) {
-      logger.error("Create tenant error:", error);
-      callback(error);
+      logger.error("❌ Create tenant error:", error);
+      callback(error instanceof Error ? error : new Error(String(error)));
     }
   }
 

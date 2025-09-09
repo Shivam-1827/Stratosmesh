@@ -397,181 +397,425 @@ Respond with ONLY the JSON object, no additional text or formatting.
     ];
   }
 
+  // private async convertToTimeSeries(
+  //   data: any[],
+  //   analysis: any
+  // ): Promise<any[]> {
+  //   const { schema } = analysis;
+
+  //   return data.map((record, index) => {
+  //     // Extract timestamp
+  //     let timestamp = new Date();
+  //     if (schema.timestampField && record[schema.timestampField]) {
+  //       timestamp = new Date(record[schema.timestampField]);
+  //     } else if (record.timestamp) {
+  //       timestamp = new Date(record.timestamp);
+  //     } else {
+  //       // Generate sequential timestamps if no timestamp field
+  //       timestamp = new Date(Date.now() - (data.length - index) * 60000); // 1 minute intervals
+  //     }
+
+  //     // Extract numeric values
+  //     const values: any = {};
+  //     if (schema.valueFields && schema.valueFields.length > 0) {
+  //       schema.valueFields.forEach((field: string) => {
+  //         const value = parseFloat(record[field]);
+  //         if (!isNaN(value)) {
+  //           values[field] = value;
+  //         }
+  //       });
+  //     } else {
+  //       // Auto-detect numeric fields
+  //       Object.entries(record).forEach(([key, value]) => {
+  //         const numValue = parseFloat(value as string);
+  //         if (
+  //           !isNaN(numValue) &&
+  //           key !== "timestamp" &&
+  //           key !== "line_number"
+  //         ) {
+  //           values[key] = numValue;
+  //         }
+  //       });
+  //     }
+
+  //     // If no numeric values found, create a default value
+  //     if (Object.keys(values).length === 0) {
+  //       values.value = 1; // Default value for counting/aggregation
+  //     }
+
+  //     return {
+  //       timestamp,
+  //       payload: {
+  //         ...values,
+  //         ...record, // Include original data
+  //       },
+  //       metadata: {
+  //         source: "llm_processed",
+  //         original_format: typeof record,
+  //         processing_time: new Date().toISOString(),
+  //         confidence: analysis.confidence,
+  //       },
+  //     };
+  //   });
+  // }
+
+  // ✅ ENHANCED: Much better fallback analysis
+
   private async convertToTimeSeries(
     data: any[],
     analysis: any
   ): Promise<any[]> {
     const { schema } = analysis;
 
+    logger.info(`Converting ${data.length} records to time series format`);
+    logger.info("Schema detected:", JSON.stringify(schema, null, 2));
+
     return data.map((record, index) => {
-      // Extract timestamp
+      // Extract timestamp - improved logic
       let timestamp = new Date();
-      if (schema.timestampField && record[schema.timestampField]) {
-        timestamp = new Date(record[schema.timestampField]);
-      } else if (record.timestamp) {
-        timestamp = new Date(record.timestamp);
-      } else {
-        // Generate sequential timestamps if no timestamp field
-        timestamp = new Date(Date.now() - (data.length - index) * 60000); // 1 minute intervals
+
+      // Try multiple timestamp field names
+      const timestampFields = [
+        schema.timestampField,
+        "Date",
+        "date",
+        "timestamp",
+        "Timestamp",
+        "time",
+        "Time",
+      ].filter(Boolean);
+
+      for (const field of timestampFields) {
+        if (record[field]) {
+          timestamp = new Date(record[field]);
+          if (!isNaN(timestamp.getTime())) {
+            break;
+          }
+        }
       }
 
-      // Extract numeric values
-      const values: any = {};
+      // If no valid timestamp, use sequential timestamps
+      if (isNaN(timestamp.getTime())) {
+        timestamp = new Date(Date.now() - (data.length - index) * 60000);
+      }
+
+      // IMPROVED: Better field extraction and organization
+      const numericFields: any = {};
+      const categoryFields: any = {};
+      const allFields: any = {};
+
+      // First, identify all available fields in the record
+      const recordKeys = Object.keys(record);
+      logger.debug(`Record ${index} keys:`, recordKeys);
+
+      // Process each field in the record
+      recordKeys.forEach((key) => {
+        const value = record[key];
+        allFields[key] = value;
+
+        // Skip timestamp fields from data fields
+        if (timestampFields.includes(key)) {
+          return;
+        }
+
+        // Try to convert to number
+        const numValue = parseFloat(String(value));
+
+        if (!isNaN(numValue) && isFinite(numValue)) {
+          numericFields[key] = numValue;
+          logger.debug(`Numeric field: ${key} = ${numValue}`);
+        } else if (value !== null && value !== undefined && value !== "") {
+          categoryFields[key] = String(value);
+          logger.debug(`Category field: ${key} = ${value}`);
+        }
+      });
+
+      // Apply schema hints if available
       if (schema.valueFields && schema.valueFields.length > 0) {
         schema.valueFields.forEach((field: string) => {
-          const value = parseFloat(record[field]);
-          if (!isNaN(value)) {
-            values[field] = value;
-          }
-        });
-      } else {
-        // Auto-detect numeric fields
-        Object.entries(record).forEach(([key, value]) => {
-          const numValue = parseFloat(value as string);
-          if (
-            !isNaN(numValue) &&
-            key !== "timestamp" &&
-            key !== "line_number"
-          ) {
-            values[key] = numValue;
+          if (record[field] !== undefined) {
+            const numValue = parseFloat(String(record[field]));
+            if (!isNaN(numValue)) {
+              numericFields[field] = numValue;
+            }
           }
         });
       }
 
-      // If no numeric values found, create a default value
-      if (Object.keys(values).length === 0) {
-        values.value = 1; // Default value for counting/aggregation
+      if (schema.categoryFields && schema.categoryFields.length > 0) {
+        schema.categoryFields.forEach((field: string) => {
+          if (record[field] !== undefined) {
+            categoryFields[field] = String(record[field]);
+          }
+        });
       }
+
+      // Ensure we have at least one numeric field for analytics
+      if (Object.keys(numericFields).length === 0) {
+        numericFields.value = 1; // Default value for counting
+      }
+
+      logger.debug(`Record ${index} processed:`, {
+        numeric: Object.keys(numericFields),
+        categorical: Object.keys(categoryFields),
+      });
 
       return {
         timestamp,
         payload: {
-          ...values,
-          ...record, // Include original data
+          // Clean, flat structure with actual data values
+          fields: {
+            ...numericFields, // Direct numeric values: Price: 100.5, Volume: 1000
+            ...categoryFields, // Direct string values: Action: "BUY"
+          },
+          // Keep original data for reference
+          originalData: record,
+          // Field classification for downstream processing
+          fieldTypes: {
+            numeric: Object.keys(numericFields),
+            categorical: Object.keys(categoryFields),
+            all: Object.keys(allFields),
+          },
         },
         metadata: {
           source: "llm_processed",
-          original_format: typeof record,
-          processing_time: new Date().toISOString(),
-          confidence: analysis.confidence,
+          originalFormat: "csv",
+          processingTime: new Date().toISOString(),
+          confidence: String(analysis.confidence || 0.5),
+          recordIndex: index,
+          detectedTimestampField:
+            timestampFields.find((f) => record[f]) || null,
         },
       };
     });
   }
 
-  // ✅ ENHANCED: Much better fallback analysis
+  // private fallbackAnalysis(content: string, description: string): any {
+  //   logger.info("Using enhanced fallback analysis");
+
+  //   let dataType = "generic_data";
+  //   let extractionMethod = "structured_text";
+  //   let confidence = 0.6; // Higher confidence for rule-based detection
+  //   let timestampField = null;
+  //   let valueFields: string[] = [];
+  //   let categoryFields: string[] = [];
+
+  //   // Enhanced detection logic
+  //   const lines = content.split("\n").filter((line) => line.trim());
+  //   const firstLine = lines[0] || "";
+  //   const sampleLines = lines.slice(0, 5);
+
+  //   // CSV detection
+  //   if (firstLine.includes(",") && lines.length > 1) {
+  //     extractionMethod = "csv";
+  //     dataType = "tabular_data";
+  //     confidence = 0.8;
+
+  //     // Try to parse CSV headers
+  //     const headers = firstLine
+  //       .split(",")
+  //       .map((h) => h.trim().replace(/['"]/g, ""));
+
+  //     headers.forEach((header) => {
+  //       const lowerHeader = header.toLowerCase();
+  //       if (
+  //         lowerHeader.includes("date") ||
+  //         lowerHeader.includes("time") ||
+  //         lowerHeader.includes("timestamp")
+  //       ) {
+  //         timestampField = header;
+  //       } else if (
+  //         lowerHeader.includes("price") ||
+  //         lowerHeader.includes("value") ||
+  //         lowerHeader.includes("amount") ||
+  //         lowerHeader.includes("quantity") ||
+  //         lowerHeader.includes("count")
+  //       ) {
+  //         valueFields.push(header);
+  //       } else {
+  //         categoryFields.push(header);
+  //       }
+  //     });
+
+  //     // Further classify based on content
+  //     if (
+  //       description.toLowerCase().includes("stock") ||
+  //       description.toLowerCase().includes("trading") ||
+  //       firstLine.toLowerCase().includes("price") ||
+  //       firstLine.toLowerCase().includes("buy") ||
+  //       firstLine.toLowerCase().includes("sell")
+  //     ) {
+  //       dataType = "financial_data";
+  //       confidence = 0.9;
+  //     } else if (
+  //       description.toLowerCase().includes("sensor") ||
+  //       description.toLowerCase().includes("iot")
+  //     ) {
+  //       dataType = "sensor_data";
+  //       confidence = 0.85;
+  //     } else if (
+  //       description.toLowerCase().includes("sales") ||
+  //       description.toLowerCase().includes("revenue")
+  //     ) {
+  //       dataType = "sales_data";
+  //       confidence = 0.85;
+  //     }
+  //   }
+  //   // JSON detection
+  //   else if (
+  //     (content.trim().startsWith("{") && content.trim().endsWith("}")) ||
+  //     (content.trim().startsWith("[") && content.trim().endsWith("]"))
+  //   ) {
+  //     dataType = "structured_data";
+  //     extractionMethod = "json";
+  //     confidence = 0.9;
+  //   }
+  //   // Log detection
+  //   else if (
+  //     sampleLines.some(
+  //       (line) =>
+  //         /\d{4}-\d{2}-\d{2}/.test(line) || /\d{2}:\d{2}:\d{2}/.test(line)
+  //     )
+  //   ) {
+  //     dataType = "log_data";
+  //     extractionMethod = "logs";
+  //     confidence = 0.75;
+  //     timestampField = "timestamp";
+  //     valueFields = ["value"];
+  //   }
+  //   // Time series detection
+  //   else if (/\d{4}-\d{2}-\d{2}/.test(content) && /[\d.]+/.test(content)) {
+  //     dataType = "time_series_data";
+  //     confidence = 0.8;
+  //     timestampField = "timestamp";
+  //     valueFields = ["value"];
+  //   }
+
+  //   // Default fallbacks if nothing detected
+  //   if (valueFields.length === 0) {
+  //     valueFields = ["value"];
+  //   }
+
+  //   const suggestedAnalytics = this.getSuggestedAnalytics(dataType);
+
+  //   logger.info(
+  //     `Fallback analysis result: ${dataType} (confidence: ${confidence})`
+  //   );
+
+  //   return {
+  //     dataType,
+  //     confidence,
+  //     schema: {
+  //       timestampField,
+  //       valueFields,
+  //       categoryFields,
+  //     },
+  //     extractionMethod,
+  //     suggestedAnalytics,
+  //   };
+  // }
+
   private fallbackAnalysis(content: string, description: string): any {
     logger.info("Using enhanced fallback analysis");
 
     let dataType = "generic_data";
     let extractionMethod = "structured_text";
-    let confidence = 0.6; // Higher confidence for rule-based detection
+    let confidence = 0.6;
     let timestampField = null;
     let valueFields: string[] = [];
     let categoryFields: string[] = [];
 
-    // Enhanced detection logic
     const lines = content.split("\n").filter((line) => line.trim());
     const firstLine = lines[0] || "";
-    const sampleLines = lines.slice(0, 5);
 
-    // CSV detection
+    logger.info("Analyzing first line:", firstLine);
+
+    // Enhanced CSV detection
     if (firstLine.includes(",") && lines.length > 1) {
       extractionMethod = "csv";
       dataType = "tabular_data";
       confidence = 0.8;
 
-      // Try to parse CSV headers
+      // Parse CSV headers more carefully
       const headers = firstLine
         .split(",")
         .map((h) => h.trim().replace(/['"]/g, ""));
+      logger.info("Detected CSV headers:", headers);
 
       headers.forEach((header) => {
         const lowerHeader = header.toLowerCase();
+
+        // Timestamp field detection
         if (
           lowerHeader.includes("date") ||
           lowerHeader.includes("time") ||
           lowerHeader.includes("timestamp")
         ) {
           timestampField = header;
-        } else if (
+        }
+        // Numeric field detection (enhanced patterns)
+        else if (
           lowerHeader.includes("price") ||
           lowerHeader.includes("value") ||
           lowerHeader.includes("amount") ||
           lowerHeader.includes("quantity") ||
-          lowerHeader.includes("count")
+          lowerHeader.includes("count") ||
+          lowerHeader.includes("volume") ||
+          lowerHeader.includes("rate") ||
+          lowerHeader.includes("score") ||
+          lowerHeader.includes("percent") ||
+          lowerHeader.includes("number")
         ) {
           valueFields.push(header);
-        } else {
+        }
+        // Everything else is categorical
+        else {
           categoryFields.push(header);
         }
       });
 
-      // Further classify based on content
+      // Enhanced business domain detection
+      const headerString = headers.join(" ").toLowerCase();
+      const descriptionLower = description.toLowerCase();
+
       if (
-        description.toLowerCase().includes("stock") ||
-        description.toLowerCase().includes("trading") ||
-        firstLine.toLowerCase().includes("price") ||
-        firstLine.toLowerCase().includes("buy") ||
-        firstLine.toLowerCase().includes("sell")
+        headerString.includes("price") ||
+        headerString.includes("stock") ||
+        headerString.includes("buy") ||
+        headerString.includes("sell") ||
+        descriptionLower.includes("trading") ||
+        descriptionLower.includes("financial")
       ) {
         dataType = "financial_data";
         confidence = 0.9;
       } else if (
-        description.toLowerCase().includes("sensor") ||
-        description.toLowerCase().includes("iot")
+        headerString.includes("sensor") ||
+        headerString.includes("temperature") ||
+        headerString.includes("humidity") ||
+        descriptionLower.includes("iot")
       ) {
         dataType = "sensor_data";
         confidence = 0.85;
       } else if (
-        description.toLowerCase().includes("sales") ||
-        description.toLowerCase().includes("revenue")
+        headerString.includes("revenue") ||
+        headerString.includes("sales") ||
+        headerString.includes("product") ||
+        descriptionLower.includes("sales")
       ) {
         dataType = "sales_data";
         confidence = 0.85;
       }
-    }
-    // JSON detection
-    else if (
-      (content.trim().startsWith("{") && content.trim().endsWith("}")) ||
-      (content.trim().startsWith("[") && content.trim().endsWith("]"))
-    ) {
-      dataType = "structured_data";
-      extractionMethod = "json";
-      confidence = 0.9;
-    }
-    // Log detection
-    else if (
-      sampleLines.some(
-        (line) =>
-          /\d{4}-\d{2}-\d{2}/.test(line) || /\d{2}:\d{2}:\d{2}/.test(line)
-      )
-    ) {
-      dataType = "log_data";
-      extractionMethod = "logs";
-      confidence = 0.75;
-      timestampField = "timestamp";
-      valueFields = ["value"];
-    }
-    // Time series detection
-    else if (/\d{4}-\d{2}-\d{2}/.test(content) && /[\d.]+/.test(content)) {
-      dataType = "time_series_data";
-      confidence = 0.8;
-      timestampField = "timestamp";
-      valueFields = ["value"];
+
+      logger.info("Schema analysis result:", {
+        dataType,
+        confidence,
+        timestampField,
+        valueFields,
+        categoryFields,
+      });
     }
 
-    // Default fallbacks if nothing detected
-    if (valueFields.length === 0) {
-      valueFields = ["value"];
-    }
-
-    const suggestedAnalytics = this.getSuggestedAnalytics(dataType);
-
-    logger.info(
-      `Fallback analysis result: ${dataType} (confidence: ${confidence})`
-    );
-
+    // Return comprehensive schema
     return {
       dataType,
       confidence,
@@ -579,9 +823,15 @@ Respond with ONLY the JSON object, no additional text or formatting.
         timestampField,
         valueFields,
         categoryFields,
+        requiredFields: [timestampField].filter(Boolean),
+        fieldTypes: {
+          [timestampField || "timestamp"]: "timestamp",
+          ...Object.fromEntries(valueFields.map((f) => [f, "numeric"])),
+          ...Object.fromEntries(categoryFields.map((f) => [f, "categorical"])),
+        },
       },
       extractionMethod,
-      suggestedAnalytics,
+      suggestedAnalytics: this.getSuggestedAnalytics(dataType),
     };
   }
 

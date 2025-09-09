@@ -18,7 +18,6 @@ class LLMProcessorServiceImpl {
 
   async processUniversalData(call: any, callback: any) {
     try {
-      // With camelCase, we now use call.request.tenantId, etc.
       const request = call.request;
       logger.info(
         `Processing universal data for tenant: ${request.tenantId}, stream: ${request.streamId}`
@@ -28,24 +27,19 @@ class LLMProcessorServiceImpl {
 
       if (request.rawText) {
         inputData = { type: "text", content: request.rawText };
-        logger.info("Processing raw text input");
       } else if (request.fileData) {
         inputData = {
           type: "file",
           content: request.fileData,
           mimetype: request.metadata?.mimetype || "application/octet-stream",
         };
-        logger.info(`Processing file data (${inputData.mimetype})`);
       } else if (request.fileUrl) {
         inputData = { type: "url", content: request.fileUrl };
-        logger.info(`Processing URL: ${request.fileUrl}`);
       } else if (request.structuredData) {
         inputData = { type: "structured", content: request.structuredData };
-        logger.info("Processing structured data");
       }
 
       if (!inputData) {
-        logger.error("Invalid request: no valid input data found");
         return callback(
           new Error("Invalid request: no valid input data found")
         );
@@ -59,22 +53,69 @@ class LLMProcessorServiceImpl {
         desiredFormat: request.desiredFormat || "time_series",
       });
 
-      logger.info(
-        `LLM processing completed: detected type: ${result.detectedType}, confidence: ${result.confidence}, records: ${result.records.length}`
-      );
+      // SIMPLIFIED: Create clean, flat structure instead of complex protobuf nesting
+      const cleanRecords = result.records.map((record, index) => {
+        const timestamp =
+          record.timestamp instanceof Date
+            ? record.timestamp
+            : new Date(record.timestamp);
 
-      callback(null, {
-        success: true,
-        detectedType: result.detectedType,
-        records: result.records.map((record) => ({
-          timestamp: { seconds: Math.floor(record.timestamp.getTime() / 1000) },
-          payload: record.payload,
-          metadata: record.metadata,
-        })),
-        schema: result.schema,
-        confidence: result.confidence,
-        processingSteps: result.processingSteps,
+        // Extract clean data from payload
+        const payload = record.payload || {};
+        const fields = payload.fields || {};
+
+        // Create a simple, flat payload structure
+        const cleanPayload: any = {
+          // Include the processed numeric and categorical fields directly
+          ...fields,
+          // Add metadata about the record
+          _metadata: {
+            recordIndex: index,
+            source: "llm_processed",
+            processingTime: new Date().toISOString(),
+            confidence: result.confidence,
+          },
+        };
+
+        return {
+          timestamp: {
+            seconds: Math.floor(timestamp.getTime() / 1000),
+            nanos: 0,
+          },
+          // Simple payload structure that's easy to work with
+          payload: this.createSimpleStruct(cleanPayload),
+          // Clean metadata
+          metadata: this.createSimpleStruct({
+            source: "llm_processed",
+            originalFormat: "csv",
+            confidence: result.confidence,
+            recordIndex: index,
+          }),
+        };
       });
+
+      // Clean schema response
+      const cleanSchema = this.createSimpleStruct({
+        valueFields: result.schema?.valueFields || [],
+        categoryFields: result.schema?.categoryFields || [],
+        timestampField: result.schema?.timestampField || "",
+        fieldTypes: result.schema?.fieldTypes || {},
+        detectedColumns: this.extractColumnsFromData(result.records),
+      });
+
+      const response = {
+        success: true,
+        detectedType: result.detectedType || "unknown",
+        records: cleanRecords,
+        schema: cleanSchema,
+        confidence: Number(result.confidence) || 0.5,
+        processingSteps: result.processingSteps || [],
+      };
+
+      logger.info(
+        `Processed ${cleanRecords.length} records with clean structure`
+      );
+      callback(null, response);
     } catch (error) {
       const err = error as Error;
       logger.error("LLM processing error:", err);
@@ -82,13 +123,67 @@ class LLMProcessorServiceImpl {
     }
   }
 
+  // SIMPLIFIED: Create minimal protobuf struct without excessive nesting
+  private createSimpleStruct(obj: any): any {
+    if (!obj || typeof obj !== "object") {
+      return { fields: {} };
+    }
+
+    const fields: any = {};
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (value === null || value === undefined) {
+        continue;
+      }
+
+      if (typeof value === "number") {
+        fields[key] = { numberValue: value };
+      } else if (typeof value === "boolean") {
+        fields[key] = { boolValue: value };
+      } else if (Array.isArray(value)) {
+        fields[key] = {
+          listValue: {
+            values: value.map((v) => ({ stringValue: String(v) })),
+          },
+        };
+      } else {
+        fields[key] = { stringValue: String(value) };
+      }
+    }
+
+    return { fields };
+  }
+
+  // Helper to extract column information from processed data
+  private extractColumnsFromData(records: any[]): any {
+    if (!records || records.length === 0) {
+      return {};
+    }
+
+    const sample = records[0];
+    const payload = sample.payload || {};
+    const fields = payload.fields || {};
+
+    const columns: any = {};
+    Object.keys(fields).forEach((key) => {
+      const value = fields[key];
+      if (typeof value === "number") {
+        columns[key] = "numeric";
+      } else if (typeof value === "string") {
+        columns[key] = "categorical";
+      } else {
+        columns[key] = "unknown";
+      }
+    });
+
+    return columns;
+  }
+
   async analyzeDataFormat(call: any, callback: any) {
     try {
       const request = call.request;
-      logger.info(`Analyzing data format for tenant: ${request.tenantId}`);
 
       let inputData: UniversalInput;
-
       if (request.textSample) {
         inputData = { type: "text", content: request.textSample };
       } else if (request.fileSample) {
@@ -114,8 +209,8 @@ class LLMProcessorServiceImpl {
         success: true,
         detectedFormat: this.mapTypeToFormat(result.detectedType),
         dataType: result.detectedType,
-        confidence: result.confidence,
-        suggestedSchema: result.schema,
+        confidence: Number(result.confidence) || 0.5,
+        suggestedSchema: this.createSimpleStruct(result.schema || {}),
         extractionMethods: result.processingSteps,
       });
     } catch (error) {
@@ -134,7 +229,6 @@ class LLMProcessorServiceImpl {
       social_media: "json",
       unknown_data: "text",
     };
-
     return formatMapping[detectedType] || "text";
   }
 }

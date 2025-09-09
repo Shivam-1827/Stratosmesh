@@ -83,18 +83,144 @@ class UniversalDataStreamServiceImpl {
   }
 
   // ✅ CRITICAL: ProcessLLMData method - exact name from proto
+  // async processLLMData(call: any, callback: any) {
+  //   logger.info("🔥 ProcessLLMData method called!");
+
+  //   try {
+  //     const request = call.request;
+  //     logger.info("Request received:", {
+  //       tenantId: request.tenant_id,
+  //       streamId: request.stream_id,
+  //       hasProcessedData: !!request.processed_data,
+  //       originalFormat: request.original_format,
+  //     });
+
+  //     const {
+  //       tenant_id: tenantId,
+  //       stream_id: streamId,
+  //       processed_data: processedData,
+  //       original_format: originalFormat,
+  //     } = request;
+
+  //     if (!tenantId || !streamId || !processedData) {
+  //       logger.error("Missing required fields", {
+  //         tenantId,
+  //         streamId,
+  //         hasProcessedData: !!processedData,
+  //       });
+  //       return callback(
+  //         new Error(
+  //           "Missing required fields: tenant_id, stream_id, or processed_data"
+  //         )
+  //       );
+  //     }
+
+  //     logger.info(
+  //       `Processing LLM data for tenant ${tenantId}, stream ${streamId}`
+  //     );
+  //     logger.info(
+  //       `Detected type: ${
+  //         processedData.detected_type || processedData.detectedType
+  //       }, confidence: ${processedData.confidence}`
+  //     );
+
+  //     // Validate tenant exists
+  //     const tenant = await this.getTenantContext(tenantId);
+  //     if (!tenant) {
+  //       return callback(new Error("Tenant not found or inactive"));
+  //     }
+
+  //     const results = [];
+  //     const records = processedData.records || [];
+
+  //     // Process each record from LLM
+  //     for (let i = 0; i < records.length; i++) {
+  //       const record = records[i];
+
+  //       // Handle timestamp conversion
+  //       let timestamp = new Date();
+  //       if (record.timestamp) {
+  //         if (record.timestamp.seconds) {
+  //           timestamp = new Date(record.timestamp.seconds * 1000);
+  //         } else {
+  //           timestamp = new Date(record.timestamp);
+  //         }
+  //       }
+
+  //       const streamData: StreamData = {
+  //         tenantId: tenantId,
+  //         streamId: streamId,
+  //         dataType:
+  //           processedData.detected_type ||
+  //           processedData.detectedType ||
+  //           "processed_data",
+  //         payload: record.payload || record,
+  //         timestamp: timestamp,
+  //         metadata: {
+  //           ...(record.metadata || {}),
+  //           llm_processed: true,
+  //           original_format: originalFormat || "text",
+  //           confidence: processedData.confidence || 0.5,
+  //           processing_steps:
+  //             processedData.processing_steps ||
+  //             processedData.processingSteps ||
+  //             [],
+  //           schema: processedData.schema || {},
+  //         },
+  //       };
+
+  //       // Store the processed data
+  //       await this.storeStreamData(streamData);
+
+  //       // Queue for further processing if needed
+  //       await this.queueForProcessing(streamData, tenant);
+
+  //       results.push({
+  //         recordId: `${streamId}_${Date.now()}_${i}`,
+  //         processedAt: { seconds: Math.floor(Date.now() / 1000) },
+  //         success: true, // ✅ Mark as successful
+  //         errorMessage: "",
+  //       });
+  //     }
+
+  //     // Update metrics
+  //     this.metrics.incrementCounter("llm_streams_processed_total", {
+  //       tenant_id: tenantId,
+  //       detected_type:
+  //         processedData.detected_type ||
+  //         processedData.detectedType ||
+  //         "unknown",
+  //       original_format: originalFormat || "text",
+  //     });
+
+  //     // Send success response with both snake_case and camelCase for compatibility
+  //     const response = {
+  //       success: true,
+  //       records_processed: results.length,
+  //       recordsProcessed: results.length, // camelCase version
+  //       detected_type:
+  //         processedData.detected_type || processedData.detectedType,
+  //       detectedType: processedData.detected_type || processedData.detectedType, // camelCase version
+  //       confidence: processedData.confidence || 0.5,
+  //       results: results,
+  //     };
+
+  //     logger.info(
+  //       `✅ Successfully processed ${results.length} records for tenant ${tenantId}`
+  //     );
+  //     callback(null, response);
+  //   } catch (error) {
+  //     const err = error as Error;
+  //     logger.error("❌ LLM data processing error:", err);
+  //     callback(new Error(`Processing failed: ${err.message}`));
+  //   }
+  // }
+
   async processLLMData(call: any, callback: any) {
-    logger.info("🔥 ProcessLLMData method called!");
+    logger.info("ProcessLLMData method called");
 
     try {
       const request = call.request;
-      logger.info("Request received:", {
-        tenantId: request.tenant_id,
-        streamId: request.stream_id,
-        hasProcessedData: !!request.processed_data,
-        originalFormat: request.original_format,
-      });
-
       const {
         tenant_id: tenantId,
         stream_id: streamId,
@@ -103,26 +229,12 @@ class UniversalDataStreamServiceImpl {
       } = request;
 
       if (!tenantId || !streamId || !processedData) {
-        logger.error("Missing required fields", {
-          tenantId,
-          streamId,
-          hasProcessedData: !!processedData,
-        });
         return callback(
           new Error(
             "Missing required fields: tenant_id, stream_id, or processed_data"
           )
         );
       }
-
-      logger.info(
-        `Processing LLM data for tenant ${tenantId}, stream ${streamId}`
-      );
-      logger.info(
-        `Detected type: ${
-          processedData.detected_type || processedData.detectedType
-        }, confidence: ${processedData.confidence}`
-      );
 
       // Validate tenant exists
       const tenant = await this.getTenantContext(tenantId);
@@ -132,54 +244,94 @@ class UniversalDataStreamServiceImpl {
 
       const results = [];
       const records = processedData.records || [];
+      let successfullyProcessed = 0;
+      const timestamp = Date.now();
+
+      logger.info(`Processing ${records.length} records from LLM`);
 
       // Process each record from LLM
       for (let i = 0; i < records.length; i++) {
         const record = records[i];
+        let processingSuccessful = true;
+        let errorMessage = "";
 
-        // Handle timestamp conversion
-        let timestamp = new Date();
-        if (record.timestamp) {
-          if (record.timestamp.seconds) {
-            timestamp = new Date(record.timestamp.seconds * 1000);
-          } else {
-            timestamp = new Date(record.timestamp);
+        try {
+          // Handle timestamp conversion
+          let recordTimestamp = new Date();
+          if (record.timestamp) {
+            if (record.timestamp.seconds) {
+              recordTimestamp = new Date(record.timestamp.seconds * 1000);
+            } else {
+              recordTimestamp = new Date(record.timestamp);
+            }
           }
+
+          // IMPROVED: Extract clean data from the protobuf structure
+          const cleanPayload = this.extractCleanPayload(record.payload);
+
+          logger.debug(`Record ${i} clean payload:`, cleanPayload);
+
+          // Validate we have meaningful data
+          const hasData = cleanPayload && Object.keys(cleanPayload).length > 0;
+          if (!hasData) {
+            logger.warn(
+              `Record ${i} has no meaningful data, but continuing...`
+            );
+          }
+
+          const streamData: StreamData = {
+            tenantId: tenantId,
+            streamId: streamId,
+            dataType:
+              processedData.detected_type ||
+              processedData.detectedType ||
+              "processed_data",
+            payload: cleanPayload,
+            timestamp: recordTimestamp,
+            metadata: {
+              llm_processed: true,
+              original_format: originalFormat || "text",
+              confidence: processedData.confidence || 0.5,
+              processing_steps:
+                processedData.processing_steps ||
+                processedData.processingSteps ||
+                [],
+              schema: processedData.schema || {},
+              record_index: i,
+              stream_timestamp: timestamp,
+            },
+          };
+
+          // Store the processed data
+          await this.storeStreamData(streamData);
+
+          // Queue for further processing
+          await this.queueForProcessing(streamData, tenant);
+
+          successfullyProcessed++;
+          logger.info(
+            `Successfully processed record ${i} for stream ${streamId}`
+          );
+        } catch (recordError) {
+          processingSuccessful = false;
+          errorMessage =
+            recordError instanceof Error
+              ? recordError.message
+              : String(recordError);
+          logger.error(`Failed to process record ${i}:`, recordError);
         }
 
-        const streamData: StreamData = {
-          tenantId: tenantId,
-          streamId: streamId,
-          dataType:
-            processedData.detected_type ||
-            processedData.detectedType ||
-            "processed_data",
-          payload: record.payload || record,
-          timestamp: timestamp,
-          metadata: {
-            ...(record.metadata || {}),
-            llm_processed: true,
-            original_format: originalFormat || "text",
-            confidence: processedData.confidence || 0.5,
-            processing_steps:
-              processedData.processing_steps ||
-              processedData.processingSteps ||
-              [],
-            schema: processedData.schema || {},
-          },
-        };
-
-        // Store the processed data
-        await this.storeStreamData(streamData);
-
-        // Queue for further processing if needed
-        await this.queueForProcessing(streamData, tenant);
-
+        // FIXED: Generate proper record IDs and timestamps
         results.push({
-          recordId: `${streamId}_${Date.now()}_${i}`,
+          recordId: `${streamId}_${timestamp}_${i}`, // Unique, consistent ID
           processedAt: { seconds: Math.floor(Date.now() / 1000) },
-          success: true, // ✅ Mark as successful
-          errorMessage: "",
+          success: processingSuccessful,
+          errorMessage: errorMessage,
+          metadata: {
+            recordIndex: i,
+            processingTime: new Date().toISOString(),
+            dataExtracted: processingSuccessful,
+          },
         });
       }
 
@@ -193,26 +345,77 @@ class UniversalDataStreamServiceImpl {
         original_format: originalFormat || "text",
       });
 
-      // Send success response with both snake_case and camelCase for compatibility
+      // IMPROVED: Better response structure
       const response = {
         success: true,
-        records_processed: results.length,
-        recordsProcessed: results.length, // camelCase version
+        records_processed: successfullyProcessed,
+        recordsProcessed: successfullyProcessed,
+        total_records: records.length,
         detected_type:
           processedData.detected_type || processedData.detectedType,
-        detectedType: processedData.detected_type || processedData.detectedType, // camelCase version
+        detectedType: processedData.detected_type || processedData.detectedType,
         confidence: processedData.confidence || 0.5,
         results: results,
+        processing_summary: {
+          successful: successfullyProcessed,
+          failed: records.length - successfullyProcessed,
+          total: records.length,
+          success_rate:
+            ((successfullyProcessed / records.length) * 100).toFixed(1) + "%",
+        },
       };
 
       logger.info(
-        `✅ Successfully processed ${results.length} records for tenant ${tenantId}`
+        `Successfully processed ${successfullyProcessed}/${records.length} records for tenant ${tenantId}`
       );
       callback(null, response);
     } catch (error) {
       const err = error as Error;
-      logger.error("❌ LLM data processing error:", err);
+      logger.error("LLM data processing error:", err);
       callback(new Error(`Processing failed: ${err.message}`));
+    }
+  }
+
+  private extractCleanPayload(protobufPayload: any): any {
+    if (!protobufPayload || !protobufPayload.fields) {
+      return {};
+    }
+
+    const cleanData: any = {};
+
+    try {
+      // Extract fields from protobuf structure
+      const fields = protobufPayload.fields;
+
+      for (const [key, valueObj] of Object.entries(fields)) {
+        if (!valueObj || typeof valueObj !== "object") continue;
+
+        const typedValue = valueObj as any;
+
+        // Extract the actual value based on protobuf Value type
+        if (typedValue.numberValue !== undefined) {
+          cleanData[key] = typedValue.numberValue;
+        } else if (typedValue.stringValue !== undefined) {
+          cleanData[key] = typedValue.stringValue;
+        } else if (typedValue.boolValue !== undefined) {
+          cleanData[key] = typedValue.boolValue;
+        } else if (typedValue.listValue && typedValue.listValue.values) {
+          cleanData[key] = typedValue.listValue.values.map(
+            (v: any) => v.stringValue || v.numberValue || v.boolValue || v
+          );
+        } else if (typedValue.structValue && typedValue.structValue.fields) {
+          cleanData[key] = this.extractCleanPayload(typedValue.structValue);
+        } else {
+          // Fallback: try to extract any recognizable value
+          cleanData[key] = typedValue.value || typedValue;
+        }
+      }
+
+      logger.debug("Extracted clean payload:", cleanData);
+      return cleanData;
+    } catch (error) {
+      logger.error("Error extracting clean payload:", error);
+      return {};
     }
   }
 

@@ -42,19 +42,90 @@ class UniversalGateway {
     this.setupHttpGrpcBridgeRoutes();
   }
 
+  // private keysToCamelCase(obj: any): any {
+  //   if (Array.isArray(obj)) {
+  //     return obj.map((v) => this.keysToCamelCase(v));
+  //   } else if (obj !== null && obj.constructor === Object) {
+  //     return Object.keys(obj).reduce((result, key) => {
+  //       const camelKey = key.replace(/([-_][a-z])/gi, ($1) => {
+  //         return $1.toUpperCase().replace("-", "").replace("_", "");
+  //       });
+  //       result[camelKey] = this.keysToCamelCase(obj[key]);
+  //       return result;
+  //     }, {} as any);
+  //   }
+  //   return obj;
+  // }
+
   private keysToCamelCase(obj: any): any {
     if (Array.isArray(obj)) {
       return obj.map((v) => this.keysToCamelCase(v));
-    } else if (obj !== null && obj.constructor === Object) {
-      return Object.keys(obj).reduce((result, key) => {
-        const camelKey = key.replace(/([-_][a-z])/gi, ($1) => {
-          return $1.toUpperCase().replace("-", "").replace("_", "");
-        });
-        result[camelKey] = this.keysToCamelCase(obj[key]);
-        return result;
-      }, {} as any);
+    } else if (
+      obj !== null &&
+      obj !== undefined &&
+      obj.constructor === Object
+    ) {
+      const result: any = {};
+
+      for (const [key, value] of Object.entries(obj)) {
+        // Handle protobuf Value types specially
+        if (key === "fields" && value && typeof value === "object") {
+          result[key] = this.simplifyProtobufFields(value);
+        } else if (
+          key.endsWith("Value") &&
+          ["numberValue", "stringValue", "boolValue"].includes(key)
+        ) {
+          // For protobuf Value types, return just the value
+          return value;
+        } else {
+          // Convert key to camelCase
+          const camelKey = key.replace(/([-_][a-z])/gi, ($1) => {
+            return $1.toUpperCase().replace("-", "").replace("_", "");
+          });
+          result[camelKey] = this.keysToCamelCase(value);
+        }
+      }
+      return result;
     }
     return obj;
+  }
+
+  private simplifyProtobufFields(fieldsObj: any): any {
+    if (!fieldsObj || typeof fieldsObj !== "object") {
+      return fieldsObj;
+    }
+
+    const simplified: any = {};
+
+    for (const [fieldName, fieldValue] of Object.entries(fieldsObj)) {
+      if (fieldValue && typeof fieldValue === "object") {
+        const typedValue = fieldValue as any;
+
+        // Extract the actual value from protobuf Value structure
+        if (typedValue.numberValue !== undefined) {
+          simplified[fieldName] = typedValue.numberValue;
+        } else if (typedValue.stringValue !== undefined) {
+          simplified[fieldName] = typedValue.stringValue;
+        } else if (typedValue.boolValue !== undefined) {
+          simplified[fieldName] = typedValue.boolValue;
+        } else if (typedValue.listValue && typedValue.listValue.values) {
+          simplified[fieldName] = typedValue.listValue.values.map(
+            (v: any) => v.stringValue || v.numberValue || v.boolValue || v
+          );
+        } else if (typedValue.structValue && typedValue.structValue.fields) {
+          simplified[fieldName] = this.simplifyProtobufFields(
+            typedValue.structValue.fields
+          );
+        } else {
+          // Fallback: use as-is
+          simplified[fieldName] = fieldValue;
+        }
+      } else {
+        simplified[fieldName] = fieldValue;
+      }
+    }
+
+    return simplified;
   }
 
   private setupGrpcClients() {
@@ -234,6 +305,97 @@ class UniversalGateway {
   }
 
   // ✅ FIX: Use correct method names (PascalCase)
+  // async handleUniversalData(req: any, res: any) {
+  //   try {
+  //     const tenantId = req.tenantId;
+  //     const { stream_id, text, data_description, desired_format } = req.body;
+
+  //     if (!stream_id) {
+  //       return res.status(400).json({ error: "stream_id is required" });
+  //     }
+
+  //     logger.info(
+  //       `Processing universal data for tenant ${tenantId}, stream ${stream_id}`
+  //     );
+
+  //     // Step 1: Call LLM service to process the data
+  //     const llmRequest = {
+  //       tenant_id: tenantId,
+  //       stream_id: stream_id,
+  //       raw_text: text,
+  //       data_description: data_description,
+  //       desired_format: desired_format,
+  //     };
+
+  //     logger.info("Calling LLM service...");
+  //     const llmResult: any = await new Promise((resolve, reject) => {
+  //       // ✅ Use correct method name from your debug output
+  //       this.llmClient.ProcessUniversalData(
+  //         llmRequest,
+  //         (error: any, response: any) => {
+  //           if (error) {
+  //             logger.error("LLM processing error:", error);
+  //             reject(error);
+  //           } else {
+  //             logger.info("LLM processing successful");
+  //             resolve(response);
+  //           }
+  //         }
+  //       );
+  //     });
+
+  //     // Step 2: Call Stream service to store the processed data
+  //     const streamRequest = {
+  //       tenant_id: tenantId,
+  //       stream_id: stream_id,
+  //       processed_data: llmResult,
+  //       original_format: "text/plain",
+  //     };
+
+  //     logger.info("Calling Stream service with processed data...");
+
+  //     const streamResult: any = await new Promise((resolve, reject) => {
+  //       // ✅ CRITICAL FIX: Use PascalCase method name
+  //       this.streamClient.ProcessLLMData(
+  //         streamRequest,
+  //         (error: any, response: any) => {
+  //           if (error) {
+  //             logger.error("Stream processing error:", error);
+  //             reject(error);
+  //           } else {
+  //             logger.info(
+  //               `Stream processing completed: ${
+  //                 response.records_processed || response.recordsProcessed
+  //               } records`
+  //             );
+  //             resolve(response);
+  //           }
+  //         }
+  //       );
+  //     });
+
+  //     res.json({
+  //       success: true,
+  //       message: "Data processed successfully",
+  //       streamId: stream_id,
+  //       llmAnalysis: this.keysToCamelCase(llmResult),
+  //       streamResult: this.keysToCamelCase(streamResult),
+  //       timestamp: new Date().toISOString(),
+  //     });
+  //   } catch (error) {
+  //     const err = error as Error;
+  //     logger.error("Universal data processing error:", {
+  //       message: err.message,
+  //       stack: err.stack,
+  //     });
+  //     res.status(500).json({
+  //       error: err.message,
+  //       stream_id: req.body.stream_id,
+  //       timestamp: new Date().toISOString(),
+  //     });
+  //   }
+  // }
+
   async handleUniversalData(req: any, res: any) {
     try {
       const tenantId = req.tenantId;
@@ -247,7 +409,7 @@ class UniversalGateway {
         `Processing universal data for tenant ${tenantId}, stream ${stream_id}`
       );
 
-      // Step 1: Call LLM service to process the data
+      // Step 1: Call LLM service with improved error handling
       const llmRequest = {
         tenant_id: tenantId,
         stream_id: stream_id,
@@ -258,7 +420,6 @@ class UniversalGateway {
 
       logger.info("Calling LLM service...");
       const llmResult: any = await new Promise((resolve, reject) => {
-        // ✅ Use correct method name from your debug output
         this.llmClient.ProcessUniversalData(
           llmRequest,
           (error: any, response: any) => {
@@ -267,24 +428,28 @@ class UniversalGateway {
               reject(error);
             } else {
               logger.info("LLM processing successful");
+              logger.debug("LLM response structure:", {
+                success: response.success,
+                detectedType: response.detectedType,
+                recordCount: response.records ? response.records.length : 0,
+                confidence: response.confidence,
+              });
               resolve(response);
             }
           }
         );
       });
 
-      // Step 2: Call Stream service to store the processed data
+      // Step 2: Call Stream service with processed data
       const streamRequest = {
         tenant_id: tenantId,
         stream_id: stream_id,
         processed_data: llmResult,
-        original_format: "text/plain",
+        original_format: "text/csv",
       };
 
       logger.info("Calling Stream service with processed data...");
-
       const streamResult: any = await new Promise((resolve, reject) => {
-        // ✅ CRITICAL FIX: Use PascalCase method name
         this.streamClient.ProcessLLMData(
           streamRequest,
           (error: any, response: any) => {
@@ -294,8 +459,8 @@ class UniversalGateway {
             } else {
               logger.info(
                 `Stream processing completed: ${
-                  response.records_processed || response.recordsProcessed
-                } records`
+                  response.recordsProcessed || response.records_processed
+                } records processed`
               );
               resolve(response);
             }
@@ -303,26 +468,111 @@ class UniversalGateway {
         );
       });
 
-      res.json({
+      // IMPROVED: Clean up the response structure
+      const cleanLLMResult = this.cleanLLMResponse(llmResult);
+      const cleanStreamResult = this.keysToCamelCase(streamResult);
+
+      const response = {
         success: true,
         message: "Data processed successfully",
         streamId: stream_id,
-        llmAnalysis: this.keysToCamelCase(llmResult),
-        streamResult: this.keysToCamelCase(streamResult),
+        llmAnalysis: cleanLLMResult,
+        streamResult: cleanStreamResult,
+        processing: {
+          recordsAnalyzed: cleanLLMResult.records
+            ? cleanLLMResult.records.length
+            : 0,
+          recordsStored: cleanStreamResult.recordsProcessed || 0,
+          detectedType: cleanLLMResult.detectedType,
+          confidence: cleanLLMResult.confidence,
+          processingSteps: cleanLLMResult.processingSteps || [],
+        },
         timestamp: new Date().toISOString(),
-      });
+      };
+
+      logger.info("Universal data processing completed successfully");
+      res.json(response);
     } catch (error) {
       const err = error as Error;
       logger.error("Universal data processing error:", {
         message: err.message,
         stack: err.stack,
       });
+
       res.status(500).json({
+        success: false,
         error: err.message,
         stream_id: req.body.stream_id,
         timestamp: new Date().toISOString(),
       });
     }
+  }
+
+  private cleanLLMResponse(llmResult: any): any {
+    if (!llmResult) return llmResult;
+
+    const cleaned = {
+      success: llmResult.success,
+      detectedType: llmResult.detectedType,
+      confidence: llmResult.confidence,
+      processingSteps: llmResult.processingSteps || [],
+      schema: this.cleanSchema(llmResult.schema),
+      records: llmResult.records
+        ? llmResult.records.map((record: any, index: number) => {
+            return {
+              recordIndex: index,
+              timestamp: record.timestamp,
+              data: this.extractRecordData(record.payload),
+              metadata: this.simplifyMetadata(record.metadata),
+              originalPayload: record.payload, // Keep for debugging if needed
+            };
+          })
+        : [],
+    };
+
+    return cleaned;
+  }
+
+  private extractRecordData(payload: any): any {
+    if (!payload || !payload.fields) {
+      return {};
+    }
+
+    return this.simplifyProtobufFields(payload.fields);
+  }
+
+  // NEW: Clean up schema response
+  private cleanSchema(schema: any): any {
+    if (!schema || !schema.fields) {
+      return {
+        timestampField: "",
+        valueFields: [],
+        categoryFields: [],
+        fieldTypes: {},
+      };
+    }
+
+    const simplified = this.simplifyProtobufFields(schema.fields);
+
+    return {
+      timestampField: simplified.timestampField || "",
+      valueFields: Array.isArray(simplified.valueFields)
+        ? simplified.valueFields
+        : [],
+      categoryFields: Array.isArray(simplified.categoryFields)
+        ? simplified.categoryFields
+        : [],
+      fieldTypes: simplified.fieldTypes || {},
+      detectedColumns: simplified.detectedColumns || {},
+    };
+  }
+
+  private simplifyMetadata(metadata: any): any {
+    if (!metadata || !metadata.fields) {
+      return {};
+    }
+
+    return this.simplifyProtobufFields(metadata.fields);
   }
 
   private setupHttpGrpcBridgeRoutes() {
